@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=PS FTP Downloader
+GenericName=PS PKG Downloader
+Comment=Stream PKG and files directly from network to PS via FTP — zero local storage
+Exec=ps-ftp-downloader
+Icon=ps-ftp-downloader
+StartupWMClass=io.psftpdownloader.app
+Terminal=false
+StartupNotify=true
+Categories=Network;FileTransfer;Game;
+Keywords=ps4;ftp;pkg;download;upload;stream;playstation;hen;goldhen;

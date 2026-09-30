@@ -1,0 +1,317 @@
+/* ── Global reset ── */
+* {
+    font-family: 'Cantarell', 'Inter', 'Noto Sans', sans-serif;
+}
+
+window {
+    background-color: #0c0c1a;
+    color: #e2e8f0;
+}
+
+/* ── Header ── */
+.main-header {
+    background: linear-gradient(135deg, #13132a 0%, #1a1a35 100%);
+    border-bottom: 1px solid rgba(99,102,241,0.25);
+    padding: 0 20px;
+    min-height: 60px;
+}
+
+.app-title {
+    font-size: 18px;
+    font-weight: 700;
+    color: #a5b4fc;
+    letter-spacing: -0.3px;
+}
+
+.app-subtitle {
+    font-size: 11px;
+    color: #64748b;
+}
+
+/* ── Buttons ── */
+.btn-add {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 8px 18px;
+    font-weight: 600;
+    font-size: 13px;
+    box-shadow: 0 4px 15px rgba(99,102,241,0.4);
+}
+
+.btn-add:hover {
+    background: linear-gradient(135deg, #818cf8, #a78bfa);
+    box-shadow: 0 6px 20px rgba(99,102,241,0.6);
+}
+
+.btn-settings {
+    background: rgba(255,255,255,0.06);
+    color: #94a3b8;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 8px 14px;
+    font-size: 13px;
+}
+
+.btn-settings:hover {
+    background: rgba(255,255,255,0.10);
+    color: #e2e8f0;
+}
+
+.github-btn {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 4px;
+    opacity: 0.8;
+}
+
+.github-btn:hover, .github-btn:active, .github-btn:focus {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+    opacity: 1.0;
+}
+
+/* ── Empty state ── */
+.empty-box {
+    padding: 60px 40px;
+}
+
+.empty-icon {
+    font-size: 60px;
+    opacity: 0.35;
+}
+
+.empty-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: #475569;
+}
+
+.empty-sub {
+    font-size: 14px;
+    color: #334155;
+}
+
+/* ── List box ── */
+list {
+    background: transparent;
+    padding: 16px;
+}
+
+list > row {
+    background: transparent;
+    padding: 0;
+    margin-bottom: 12px;
+    border-radius: 16px;
+}
+
+list > row:selected {
+    background: transparent;
+}
+
+/* ── Download card ── */
+.dl-card {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px;
+}
+
+.dl-card:hover {
+    border-color: rgba(99,102,241,0.35);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+}
+
+.dl-name {
+    font-size: 14px;
+    font-weight: 700;
+    color: #e2e8f0;
+}
+
+.dl-url {
+    font-size: 11px;
+    color: #475569;
+    font-family: monospace;
+}
+
+.dl-info {
+    font-size: 12px;
+    color: #64748b;
+}
+
+/* ── Status badges ── */
+.status-badge {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    border: 1px solid;
+}
+
+.status-queued {
+    color: #fbbf24;
+    border-color: rgba(251,191,36,0.3);
+    background: rgba(251,191,36,0.1);
+}
+
+.status-active {
+    color: #38bdf8;
+    border-color: rgba(56,189,248,0.3);
+    background: rgba(56,189,248,0.1);
+}
+
+.status-paused {
+    color: #f97316;
+    border-color: rgba(249,115,22,0.3);
+    background: rgba(249,115,22,0.1);
+}
+
+.status-done {
+    color: #4ade80;
+    border-color: rgba(74,222,128,0.3);
+    background: rgba(74,222,128,0.1);
+}
+
+.status-error {
+    color: #f87171;
+    border-color: rgba(248,113,113,0.3);
+    background: rgba(248,113,113,0.1);
+}
+
+/* Clickable error badge — shows pointer cursor and pulsing glow on hover */
+.status-error-clickable {
+    cursor: pointer;
+}
+
+.status-error-clickable:hover {
+    background: rgba(248,113,113,0.22);
+    border-color: rgba(248,113,113,0.7);
+    box-shadow: 0 0 8px rgba(248,113,113,0.5);
+}
+
+/* ── Progress bar ── */
+progressbar trough {
+    background: rgba(255,255,255,0.07);
+    border-radius: 99px;
+    min-height: 6px;
+    border: none;
+}
+
+progressbar progress {
+    background: linear-gradient(90deg, #6366f1, #a78bfa, #38bdf8);
+    border-radius: 99px;
+    min-height: 6px;
+    border: none;
+}
+
+/* ── Icon buttons ── */
+.btn-icon {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 8px;
+    padding: 2px 8px;
+    font-size: 12px;
+    color: #64748b;
+    min-width: 28px;
+    min-height: 28px;
+}
+
+.btn-pause:hover {
+    background: rgba(249,115,22,0.15);
+    border-color: rgba(249,115,22,0.4);
+    color: #f97316;
+}
+
+.btn-resume:hover {
+    background: rgba(74,222,128,0.15);
+    border-color: rgba(74,222,128,0.4);
+    color: #4ade80;
+}
+
+.btn-cancel:hover {
+    background: rgba(248,113,113,0.15);
+    border-color: rgba(248,113,113,0.4);
+    color: #f87171;
+}
+
+.btn-remove:hover {
+    background: rgba(100,116,139,0.15);
+    border-color: rgba(100,116,139,0.4);
+    color: #94a3b8;
+}
+
+/* ── Status bar ── */
+.statusbar {
+    background: rgba(0,0,0,0.3);
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding: 6px 20px;
+    font-size: 11px;
+    color: #475569;
+    min-height: 28px;
+}
+
+/* ── Dialog ── */
+dialog {
+    background: #13132a;
+    border: 1px solid rgba(99,102,241,0.3);
+    border-radius: 20px;
+}
+
+.form-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #94a3b8;
+    letter-spacing: 0.5px;
+}
+
+.form-hint {
+    font-size: 11px;
+    color: #475569;
+}
+
+.form-entry {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px;
+    color: #e2e8f0;
+    caret-color: #a5b4fc;
+}
+
+.form-entry:focus {
+    border-color: #6366f1;
+    background: rgba(99,102,241,0.08);
+}
+
+.detect-label {
+    font-size: 11px;
+    color: #4ade80;
+}
+
+.form-sep {
+    background: rgba(255,255,255,0.07);
+    min-height: 1px;
+    margin: 4px 0;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #6366f1, #8b5cf6);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    font-weight: 700;
+    padding: 8px 20px;
+    box-shadow: 0 4px 12px rgba(99,102,241,0.4);
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #818cf8, #a78bfa);
+}
+
+headerbar {
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}

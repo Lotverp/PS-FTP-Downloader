@@ -1,0 +1,13 @@
+# Build artifacts
+gtk-app/ps-ftp-downloader
+*.deb
+
+# System
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+
+# Temp build folder
+.deb-build/
