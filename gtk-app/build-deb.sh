@@ -4,17 +4,17 @@
 #                 PS FTP Downloader (GTK4)
 #
 #  Usage: ./build-deb.sh
-#  Output: ../ps-ftp-downloader_1.1.0_amd64.deb
+#  Output: ../ps-ftp-downloader_1.2.9_amd64.deb
 # ─────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 PKG_NAME="ps-ftp-downloader"
-PKG_VERSION="1.1.0"
+PKG_VERSION="1.2.9"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
-PKG_DESCRIPTION="Download PKG directly from the network to PS via FTP without local storage"
-PKG_DEPENDS="libgtk-4-1, libcurl4"
+PKG_DESCRIPTION="Download PKG directly from the network to PS via FTP — with split-archive support"
+PKG_DEPENDS="libgtk-4-1, libcurl4, 7zip | p7zip-full | unrar"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/../.deb-build"
@@ -74,6 +74,10 @@ Description: ${PKG_DESCRIPTION}
  and sends them to the PS via FTP in real time, using a
  2 MB ring-buffer pipe. No temporary files, zero local storage.
  .
+ Split-archive mode: download multi-part archives (.rar/.zip/etc.),
+ extract locally with 7zip, and upload the resulting .pkg via FTP.
+ All temporary files are deleted automatically after the upload.
+ .
  Compatible with: GoldHen, ps4-hen, and any PS FTP server.
  .
  Features:
@@ -83,6 +87,7 @@ Description: ${PKG_DESCRIPTION}
   - Progress bar with real-time speed and ETA
   - Automatic file extension detection
   - Pure HTTP to FTP streaming (2 MB ring-buffer)
+  - Split-archive support via 7zip (local extract + FTP upload)
 EOT
 
 cat > "${PKG_ROOT}/DEBIAN/postinst" << 'EOF2'

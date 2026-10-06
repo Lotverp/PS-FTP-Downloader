@@ -310,6 +310,31 @@ dialog {
     background: linear-gradient(135deg, #818cf8, #a78bfa);
 }
 
+/* ── + Add URL slot button ── */
+.btn-add-slot {
+    background: rgba(99,102,241,0.12);
+    color: #a5b4fc;
+    border: 1px solid rgba(99,102,241,0.3);
+    border-radius: 8px;
+    padding: 5px 14px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.btn-add-slot:hover {
+    background: rgba(99,102,241,0.22);
+    border-color: rgba(99,102,241,0.55);
+    color: #c7d2fe;
+}
+
+/* ── Numbered label for each URL slot ── */
+.url-slot-num {
+    font-size: 12px;
+    font-weight: 700;
+    color: #6366f1;
+    min-width: 26px;
+}
+
 headerbar {
     background: transparent;
     border: none;

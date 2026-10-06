@@ -24,7 +24,8 @@ Compatible with any PS FTP server: **GoldHen (PS4)**, **ps4-hen**, **ps3-hen**, 
 | Feature | Description |
 |----------|-------------|
 | **Pure Streaming** | Simultaneous HTTP download and FTP upload via 2 MB ring-buffer |
-| **Zero Storage** | No temporary files saved on your PC |
+| **Zero Storage** | No temporary files saved on your PC (for standard single files) |
+| **Split-Archives** | Download multi-part archives, extract locally with 7zip, and upload the `.pkg` |
 | **Auto-Resume**    | Seamlessly recovers from dropped HTTP connections (like `wget -c`) |
 | **Live Progress Bar**| Speed in MB/s, transferred size, percentage, and ETA |
 | **Multi-download** | Multiple concurrent transfers from the same window |
@@ -42,7 +43,7 @@ Compatible with any PS FTP server: **GoldHen (PS4)**, **ps4-hen**, **ps3-hen**, 
 Check the **[Releases](../../releases)** tab for the pre-compiled `.deb` package.
 
 ```bash
-sudo apt install ./ps-ftp-downloader_1.1.0_amd64.deb
+sudo apt install ./ps-ftp-downloader_1.2.9_amd64.deb
 ```
 
 Then launch from your application menu or terminal:
@@ -68,7 +69,7 @@ make
 ```bash
 cd PS-FTP-Downloader/gtk-app
 ./build-deb.sh
-sudo apt install ../ps-ftp-downloader_1.1.0_amd64.deb
+sudo apt install ../ps-ftp-downloader_1.2.9_amd64.deb
 ```
 
 ---
@@ -92,13 +93,27 @@ Before using the application, you must enable the FTP server on your console:
 
 1. Launch **PS FTP Downloader**.
 2. Click **Settings** and insert the **FTP Host (IP address)** provided by your PS and the **FTP Port** (default `2121`).
-3. Click **New Download**.
-4. Paste the direct download URL of your PKG. The app will automatically analyze the URL to detect the file extension and size.
-5. Enter the **Destination filename** (the app adds the extension automatically if detected).
-6. Click **Start** — the streaming will begin immediately.
-7. Once the transfer is **DONE**, go to your PS.
-8. (PS4) Navigate to **GoldHen** -> **Debug Settings** -> **Package Installer**.
-9. Select and install the PKG file you just transferred.
+### Standard Direct Transfer
+1. Click **New Download**.
+2. Paste the direct download URL of your PKG. The app will automatically analyze the URL to detect the file extension and size.
+3. Enter the **Destination filename** (the app adds the extension automatically if detected).
+4. Click **Start** — the streaming will begin immediately.
+
+### Split Archive Transfer
+*Requires `7zip`, `p7zip-full`, or `unrar` installed on your system.*
+1. Click **Split Archive** in the header bar.
+2. In the dialog, paste the URLs of the archive parts (e.g., `.part1.rar`, `.part2.rar`) into the numbered slots. Click **+ Add URL** to add more slots.
+3. Enter the final destination `.pkg` name and the archive password (if any).
+4. Click **Start**. The app will:
+   - Download all parts to a temporary folder (like `~/.cache/ps-ftp-downloader/...`).
+   - Extract them locally using 7zip.
+   - Upload the resulting `.pkg` file to the PS via FTP.
+   - Automatically delete all temporary files.
+
+### After Transfer Completes
+1. Once the transfer is **DONE**, go to your PS.
+2. (PS4) Navigate to **GoldHen** -> **Debug Settings** -> **Package Installer**.
+3. Select and install the PKG file you just transferred.
 
 ---
 
@@ -151,7 +166,7 @@ PC                         RAM (2 MB ring buffer)              PS
 ```
 PS-FTP-Downloader/
 ├── gtk-app/
-│   ├── main.c                     # GTK4 C source code (~1600 lines)
+│   ├── main.c                     # GTK4 C source code (~2700 lines)
 │   ├── style.css                  # Dark UI theme
 │   ├── Makefile                   # Build system
 │   ├── ps-ftp-downloader.desktop  # App menu integration
@@ -167,6 +182,7 @@ PS-FTP-Downloader/
 
 - **OS**: Linux (Ubuntu 22.04+, Debian 12+, or compatible)
 - **GTK**: 4.6 or higher
+- **Tools**: `7zip`, `p7zip-full`, or `unrar` (required only for Split Archive functionality)
 - **PS**: Firmware with active HEN/GoldHen and running FTP server
 - **Network**: PS and PC connected to the same local network (LAN/WiFi)
 - **Architecture**: x86_64 (amd64)
