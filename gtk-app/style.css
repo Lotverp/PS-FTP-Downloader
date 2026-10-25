@@ -348,6 +348,70 @@ dropdown > button:hover arrow,
     color: #e2e8f0;
 }
 
+dropdown > button *,
+.catalog-dropdown > button * {
+    background: transparent;
+    background-color: transparent;
+    border: none;
+    outline: none;
+    box-shadow: none;
+}
+
+dropdown > button *:hover,
+dropdown > button *:selected,
+dropdown > button *:active,
+dropdown > button *:focus,
+.catalog-dropdown > button *:hover,
+.catalog-dropdown > button *:selected,
+.catalog-dropdown > button *:active,
+.catalog-dropdown > button *:focus {
+    background: transparent;
+    background-color: transparent;
+    outline: none;
+    box-shadow: none;
+}
+
+dropdown > button row,
+dropdown > button row:hover,
+dropdown > button row:selected,
+dropdown > button row:active,
+dropdown > button row:focus,
+dropdown > button row.activatable,
+dropdown > button row.activatable:hover,
+dropdown > button row.activatable:selected,
+dropdown > button label,
+dropdown > button label:hover,
+dropdown > button label:selected,
+.catalog-dropdown > button row,
+.catalog-dropdown > button row:hover,
+.catalog-dropdown > button row:selected,
+.catalog-dropdown > button row:active,
+.catalog-dropdown > button row:focus,
+.catalog-dropdown > button row.activatable,
+.catalog-dropdown > button row.activatable:hover,
+.catalog-dropdown > button row.activatable:selected,
+.catalog-dropdown > button label,
+.catalog-dropdown > button label:hover,
+.catalog-dropdown > button label:selected {
+    background: transparent;
+    background-color: transparent;
+    color: inherit;
+    outline: none;
+    box-shadow: none;
+    border: none;
+}
+
+dropdown > button selection,
+dropdown > button row selection,
+dropdown > button label selection,
+.catalog-dropdown > button selection,
+.catalog-dropdown > button row selection,
+.catalog-dropdown > button label selection {
+    background: transparent;
+    background-color: transparent;
+    color: inherit;
+}
+
 /* ── Popover Dropdown Menus ── */
 popover {
     background: transparent;
@@ -366,13 +430,13 @@ popover contents {
     border: 1px solid rgba(99, 102, 241, 0.3);
     border-radius: 12px;
     box-shadow: 0 12px 36px rgba(0, 0, 0, 0.65);
-    padding: 6px;
+    padding: 4px;
     color: #e2e8f0;
 }
 
 popover listview {
     background: transparent;
-    padding: 2px;
+    padding: 0;
     outline: none;
     box-shadow: none;
 }
@@ -380,23 +444,33 @@ popover listview {
 /* ── Modern Custom Scrollbars ── */
 scrollbar {
     background-color: transparent;
-    transition: all 200ms ease;
+    border: none;
+    box-shadow: none;
 }
+
 scrollbar slider {
     min-width: 6px;
-    min-height: 6px;
+    min-height: 24px;
     border-radius: 9999px;
     background-color: rgba(255, 255, 255, 0.2);
+    border: none;
+    margin: 2px;
+    transition: background-color 0.2s ease;
 }
+
+scrollbar.horizontal slider {
+    min-width: 24px;
+    min-height: 6px;
+}
+
 scrollbar slider:hover {
     background-color: rgba(99, 102, 241, 0.6);
 }
 
-
 popover listview > row {
-    border-radius: 8px;
-    padding: 8px 14px;
-    margin: 2px 0;
+    border-radius: 6px;
+    padding: 6px 12px;
+    margin: 1px 0;
     color: #cbd5e1;
     font-size: 13px;
     background: transparent;
@@ -422,6 +496,13 @@ popover listview > row:focus,
 popover listview > row:active {
     outline: none;
     box-shadow: none;
+}
+
+popover listview > row selection,
+popover listview > row label selection {
+    background: transparent;
+    background-color: transparent;
+    color: inherit;
 }
 
 /* ── Empty state ── */

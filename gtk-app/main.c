@@ -4246,6 +4246,29 @@ static void on_sources_clicked(GtkButton *btn, gpointer user_data);
 static void on_refresh_catalog_clicked(GtkButton *btn, gpointer user_data);
 static void show_sources_dialog(GtkWindow *parent);
 
+static void configure_dropdown_popover(GtkWidget *dropdown) {
+    if (!dropdown) return;
+    for (GtkWidget *child = gtk_widget_get_first_child(dropdown); child != NULL; child = gtk_widget_get_next_sibling(child)) {
+        if (GTK_IS_POPOVER(child)) {
+            GtkWidget *contents = gtk_widget_get_first_child(child);
+            if (contents) {
+                gtk_widget_set_valign(contents, GTK_ALIGN_START);
+                GtkWidget *box = gtk_widget_get_first_child(contents);
+                if (box) {
+                    gtk_widget_set_valign(box, GTK_ALIGN_START);
+                    for (GtkWidget *bchild = gtk_widget_get_first_child(box); bchild != NULL; bchild = gtk_widget_get_next_sibling(bchild)) {
+                        if (GTK_IS_SCROLLED_WINDOW(bchild)) {
+                            gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(bchild), TRUE);
+                            gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(bchild), 380);
+                        }
+                    }
+                }
+            }
+            break;
+        }
+    }
+}
+
 static GtkWidget *build_catalog_page(void) {
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_widget_add_css_class(box, "catalog-page");
@@ -4271,6 +4294,7 @@ static GtkWidget *build_catalog_page(void) {
     g_catalog_cat_dropdown = gtk_drop_down_new(NULL, NULL);
     gtk_widget_add_css_class(g_catalog_cat_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_catalog_cat_dropdown, FALSE);
+    configure_dropdown_popover(g_catalog_cat_dropdown);
     GtkStringList *init_cats = gtk_string_list_new(NULL);
     gtk_string_list_append(init_cats, "Tutte");
     gtk_drop_down_set_model(GTK_DROP_DOWN(g_catalog_cat_dropdown), G_LIST_MODEL(init_cats));
@@ -4284,6 +4308,7 @@ static GtkWidget *build_catalog_page(void) {
     g_catalog_reg_dropdown = gtk_drop_down_new(G_LIST_MODEL(reg_list), NULL);
     gtk_widget_add_css_class(g_catalog_reg_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_catalog_reg_dropdown, FALSE);
+    configure_dropdown_popover(g_catalog_reg_dropdown);
     g_object_unref(reg_list);
     g_signal_connect(g_catalog_reg_dropdown, "notify::selected", G_CALLBACK(on_catalog_reg_selected), NULL);
 
@@ -7019,6 +7044,7 @@ static GtkWidget *build_dlpsgame_page(void) {
     g_dlps_console_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_consoles), NULL);
     gtk_widget_add_css_class(g_dlps_console_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_dlps_console_dropdown, FALSE);
+    configure_dropdown_popover(g_dlps_console_dropdown);
     g_object_unref(dlps_consoles);
     g_signal_connect(g_dlps_console_dropdown, "notify::selected", G_CALLBACK(on_dlps_console_changed), NULL);
 
@@ -7031,6 +7057,7 @@ static GtkWidget *build_dlpsgame_page(void) {
     g_dlps_region_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_regions), NULL);
     gtk_widget_add_css_class(g_dlps_region_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_dlps_region_dropdown, FALSE);
+    configure_dropdown_popover(g_dlps_region_dropdown);
     g_object_unref(dlps_regions);
     g_signal_connect(g_dlps_region_dropdown, "notify::selected", G_CALLBACK(on_dlps_region_changed), NULL);
 
