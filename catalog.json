@@ -2,41 +2,52 @@
   "name": "PS4 Homebrew Community Feed",
   "items": [
     {
-      "id": "itemzflow",
-      "name": "Itemzflow Game Manager",
-      "version": "1.08",
-      "category": "Tools",
-      "description": "Game manager, backup launcher, and homebrew utility for PlayStation 4.",
-      "icon": "https://raw.githubusercontent.com/LightningMods/Itemzflow/master/.github/icon.png",
-      "url": "https://github.com/LightningMods/Itemzflow/releases/download/v1.08/Itemzflow.pkg",
-      "pkg_name": "Itemzflow.pkg",
-      "size": 48234496
-    },
-    {
       "id": "apollo-save-tool",
       "name": "Apollo Save Tool PS4",
-      "version": "1.4.0",
+      "version": "2.4.0",
       "category": "Save Management",
-      "description": "Manage, resign, backup, and restore PS4 save-game files with cheats.",
-      "icon": "https://raw.githubusercontent.com/bucanero/apollo-ps4/master/resources/icon0.png",
-      "parts": [
-        "https://github.com/bucanero/apollo-ps4/releases/download/v1.4.0/apollo-ps4.part1.rar",
-        "https://github.com/bucanero/apollo-ps4/releases/download/v1.4.0/apollo-ps4.part2.rar"
-      ],
-      "password": "ps4",
+      "region": "Tutte",
+      "description": "Gestione, resign, backup e ripristino di salvataggi PS4 con supporto trucchi.",
+      "icon": "https://raw.githubusercontent.com/bucanero/apollo-ps4/main/sce_sys/icon0.png",
+      "url": "https://github.com/bucanero/apollo-ps4/releases/download/v2.4.0/IV0000-APOL00004_00-APOLLO0000000PS4.pkg",
       "pkg_name": "Apollo-SaveTool.pkg",
-      "size": 18874368
+      "size": 22806528
     },
     {
-      "id": "retroarch-ps4",
-      "name": "RetroArch",
-      "version": "1.19.1",
-      "category": "Emulators",
-      "description": "Frontend for emulators, game engines, and media players.",
-      "icon": "https://www.retroarch.com/images/retroarch-logo.png",
-      "url": "https://buildbot.libretro.com/stable/1.19.1/playstation/ps4/RetroArch.pkg",
-      "pkg_name": "RetroArch.pkg",
-      "size": 251658240
+      "id": "ps4-store",
+      "name": "Homebrew Store (Store-R2)",
+      "version": "2.5",
+      "category": "Store",
+      "region": "Tutte",
+      "description": "App store homebrew per scaricare giochi, utility e demo direttamente su PS4.",
+      "icon": "https://raw.githubusercontent.com/LightningMods/PS4-Store/master/App%20Media-Assets/sce_sys/icon0.png",
+      "url": "https://github.com/LightningMods/PS4-Store/releases/download/4.5/Store-R2.pkg",
+      "pkg_name": "Store-R2.pkg",
+      "size": 24772608
+    },
+    {
+      "id": "goldhen-cheats",
+      "name": "GoldHEN Cheat Manager",
+      "version": "1.1.4",
+      "category": "Cheats",
+      "region": "Tutte",
+      "description": "Scarica e aggiorna trucchi e patch a 60 FPS per GoldHEN direttamente su PS4.",
+      "icon": "https://raw.githubusercontent.com/GoldHEN/GoldHEN_Cheat_Manager/main/sce_sys/icon0.png",
+      "url": "https://github.com/GoldHEN/GoldHEN_Cheat_Manager/releases/download/v1.1.4/IV0000-GOLD00777_00-GOLDCHEATS000PS4.pkg",
+      "pkg_name": "GoldHEN_Cheat_Manager.pkg",
+      "size": 17563648
+    },
+    {
+      "id": "ps4-cheats-manager",
+      "name": "PS4 Cheats Manager",
+      "version": "1.2.2",
+      "category": "Cheats",
+      "region": "Tutte",
+      "description": "Database offline e gestione codici trucchi e trainer per giochi PS4.",
+      "icon": "https://raw.githubusercontent.com/bucanero/PS4CheatsManager/main/sce_sys/icon0.png",
+      "url": "https://github.com/bucanero/PS4CheatsManager/releases/download/v1.2.2/IV0000-CHTM00777_00-PS4CHEATSMANAGER.pkg",
+      "pkg_name": "PS4CheatsManager.pkg",
+      "size": 17800000
     }
   ]
 }

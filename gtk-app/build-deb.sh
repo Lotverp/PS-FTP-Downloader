@@ -10,11 +10,12 @@
 set -euo pipefail
 
 PKG_NAME="ps-ftp-downloader"
-PKG_VERSION="1.3.4"
+PKG_VERSION="1.3.5"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
-PKG_DESCRIPTION="Download PKG directly from network to PS via FTP — with split-archive & DLPSGame PS4 catalog"
-PKG_DEPENDS="libgtk-4-1, libcurl4 | libcurl4t64, libjson-glib-1.0-0, 7zip | p7zip-full | unrar"
+PKG_DESCRIPTION="Download PKG directly from network to PS via FTP — with split-archive, DLPSGame catalog & Undetected ChromeDriver"
+PKG_DEPENDS="libgtk-4-1, libcurl4 | libcurl4t64, libjson-glib-1.0-0, 7zip | unar | p7zip-full | unrar, python3, python3-pip"
+PKG_RECOMMENDS="chromium-browser | google-chrome-stable | chromium, unar"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/../.deb-build"
@@ -67,6 +68,7 @@ Architecture: ${PKG_ARCH}
 Maintainer: ${PKG_MAINTAINER}
 Installed-Size: ${INSTALLED_SIZE}
 Depends: ${PKG_DEPENDS}
+Recommends: ${PKG_RECOMMENDS}
 Section: net
 Priority: optional
 Homepage: https://github.com/Lotverp/PS-FTP-Downloader
@@ -76,7 +78,7 @@ Description: ${PKG_DESCRIPTION}
  2 MB ring-buffer pipe. No temporary files, zero local storage.
  .
  Split-archive mode: download multi-part archives (.rar/.zip/etc.),
- extract locally with 7zip, and upload the resulting .pkg via FTP.
+ extract locally with 7zip or unar, and upload the resulting .pkg via FTP.
  All temporary files are deleted automatically after the upload.
  .
  Compatible with: GoldHen, ps4-hen, and any PS FTP server.
@@ -88,7 +90,8 @@ Description: ${PKG_DESCRIPTION}
   - Progress bar with real-time speed and ETA
   - Automatic file extension detection
   - Pure HTTP to FTP streaming (2 MB ring-buffer)
-  - Split-archive support via 7zip (local extract + FTP upload)
+  - Split-archive support via 7zip & unar (local extract + FTP upload)
+  - Cloudflare & captcha auto-resolver via Undetected ChromeDriver
 EOT
 
 cat > "${PKG_ROOT}/DEBIAN/postinst" << 'EOF2'
@@ -99,6 +102,13 @@ if command -v gtk-update-icon-cache >/dev/null 2>&1; then
 fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database >/dev/null 2>&1 || true
+fi
+
+# Ensure Python dependencies for bot resolver
+if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -c "import undetected_chromedriver, selenium" >/dev/null 2>&1; then
+        python3 -m pip install --break-system-packages undetected-chromedriver selenium >/dev/null 2>&1 || true
+    fi
 fi
 EOF2
 chmod 0755 "${PKG_ROOT}/DEBIAN/postinst"
@@ -117,6 +127,8 @@ chmod 0755 "${PKG_ROOT}/DEBIAN/postrm"
 
 install -m 0755 "${SCRIPT_DIR}/ps-ftp-downloader"           "${PKG_ROOT}/usr/bin/ps-ftp-downloader"
 install -m 0644 "${SCRIPT_DIR}/style.css"                     "${PKG_ROOT}/usr/share/ps-ftp-downloader/style.css"
+install -m 0755 "${SCRIPT_DIR}/uc_resolver.py"                "${PKG_ROOT}/usr/share/ps-ftp-downloader/uc_resolver.py"
+install -m 0755 "${SCRIPT_DIR}/setup-bot-resolver.sh"         "${PKG_ROOT}/usr/share/ps-ftp-downloader/setup-bot-resolver.sh"
 install -m 0644 "${SCRIPT_DIR}/github-mark.svg"             "${PKG_ROOT}/usr/share/ps-ftp-downloader/github-mark.svg"
 if [ -f "${SCRIPT_DIR}/../catalog.json" ]; then
     install -m 0644 "${SCRIPT_DIR}/../catalog.json"         "${PKG_ROOT}/usr/share/ps-ftp-downloader/catalog.json.example"

@@ -24,6 +24,7 @@ Compatible with any PS FTP server: **GoldHen (PS4)**, **ps4-hen**, **ps3-hen**, 
 | Feature | Description |
 |----------|-------------|
 | **Giochi PS4 (DLPSGame)** | Live browser for 6,500+ PS4 games from DLPSGame with covers, CUSA & links |
+| **Undetected ChromeDriver** | Bypass automatico Cloudflare/anti-bot per link protetti e download 1-Click |
 | **App Catalog**    | Built-in homebrew & app catalog with instant 1-click install |
 | **Pure Streaming** | Simultaneous HTTP download and FTP upload via 2 MB ring-buffer |
 | **Zero Storage** | No temporary files saved on your PC (for standard single files) |
@@ -45,7 +46,7 @@ Compatible with any PS FTP server: **GoldHen (PS4)**, **ps4-hen**, **ps3-hen**, 
 Check the **[Releases](../../releases)** tab for the pre-compiled `.deb` package.
 
 ```bash
-sudo apt install ./ps-ftp-downloader_1.3.4_amd64.deb
+sudo apt install ./ps-ftp-downloader_1.3.5_amd64.deb
 ```
 
 Then launch from your application menu or terminal:
@@ -205,11 +206,37 @@ PS-FTP-Downloader/
 
 ---
 
+## Undetected ChromeDriver (Automated Bot Resolver)
+
+Molti siti e aggregatori di link (come `downloadgameps3.net` o `filecrypt.cc`) utilizzano sistemi di protezione bot come **Cloudflare Turnstile** o countdown timer che bloccano le richieste HTTP dirette.
+
+**PS FTP Downloader** integra [undetected-chromedriver](https://github.com/ultrafunkamsterdam/undetected-chromedriver) per bypassare in modo completamente automatico questi blocchi durante i download automatici (1-Click):
+1. All'avvio di un download automatico, l'applicazione rileva se il link è protetto.
+2. Viene avviato in background il resolver (`uc_resolver.py`) con una sessione Chrome/Chromium anti-bot.
+3. Il controllo Cloudflare viene superato in pochi secondi, i timer vengono attesi e viene estratto il link di download finale (`.pkg`, `.rar`, `.7z`, Mediafire, ecc.).
+4. Il download verso la console PlayStation si avvia immediatamente in streaming RAM ring-buffer.
+
+### Configurazione Rapida del Resolver
+
+Puoi configurare le dipendenze con lo script automatico:
+```bash
+cd gtk-app
+./setup-bot-resolver.sh
+```
+
+Oppure manualmente tramite pip:
+```bash
+pip install --user undetected-chromedriver selenium
+```
+> Assicurati di avere installato **Chromium** (`sudo snap install chromium` / `sudo apt install chromium-browser`) oppure **Google Chrome**.
+
+---
+
 ## System Requirements
 
 - **OS**: Linux (Ubuntu 22.04+, Debian 12+, or compatible)
 - **GTK**: 4.6 or higher
-- **Tools**: `7zip`, `p7zip-full`, or `unrar` (required only for Split Archive functionality)
+- **Tools**: `7zip`, `unar`, `p7zip-full`, or `unrar` (required for Split Archive & RAR extraction)
 - **PS**: Firmware with active HEN/GoldHen and running FTP server
 - **Network**: PS and PC connected to the same local network (LAN/WiFi)
 - **Architecture**: x86_64 (amd64)

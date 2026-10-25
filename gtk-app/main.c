@@ -181,8 +181,13 @@ static char g_ftp_dir[512]  = FTP_DIR_DEFAULT;
 static char g_ftp_user[256] = FTP_USER_DEFAULT;
 static char g_ftp_pass[256] = FTP_PASS_DEFAULT;
 static char g_tmp_dir[512]  = ""; /* if empty, use g_get_user_cache_dir() */
-static char g_saved_passwords[1024] = "SuperPSX,DLPSGAME.COM";
+static char g_saved_passwords[1024] = "[DLPSGAME.COM],DLPSGAME.COM,dlpsgame.com,SuperPSX,superpsx";
 static char g_realdebrid_token[256] = "";
+static gboolean g_uc_enabled = TRUE;
+static gboolean g_uc_headless = TRUE;
+static char g_uc_last_cookie[4096] = "";
+static char g_uc_last_user_agent[512] = "";
+static char g_uc_last_referer[2048] = "";
 
 /* Root-level GTK widgets kept for cross-function access. */
 static GtkWidget *g_window;
@@ -197,6 +202,7 @@ static GtkWidget *g_entry_name;
 static GtkWidget *g_entry_pass_single;
 static GtkWidget *g_lbl_detected;
 static GtkWidget *g_set_host, *g_set_port, *g_set_dir, *g_set_user, *g_set_pass, *g_set_tmp, *g_set_saved_pass, *g_set_rd_token;
+static GtkWidget *g_chk_uc_enabled, *g_chk_uc_headless;
 
 /* Split-archive dialog refs. */
 static GtkWidget *g_arch_urls_box;   /* VBox containing one GtkEntry per URL  */
@@ -212,10 +218,18 @@ static GtkWidget *g_catalog_cat_dropdown = NULL;
 static GtkWidget *g_catalog_status_lbl = NULL;
 static GtkCustomFilter *g_catalog_cat_filter = NULL;
 static char g_selected_category[64] = "Tutte";
+static GtkWidget *g_toast_box = NULL;
 static GtkWidget *g_toast_label = NULL;
+static GtkWidget *g_toast_progress = NULL;
+static guint g_toast_pulse_id = 0;
 static guint g_toast_timeout_id = 0;
 static void show_toast(const char *msg);
+static void show_prep_progress(const char *msg);
+static void hide_prep_progress(void);
 static void trigger_catalog_fetch_async(void);
+typedef struct AutoSession AutoSession;
+static gboolean is_uc_resolver_available(void);
+static void trigger_uc_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
 
 /* ═══════════════════════════════════════════════════════════
  * Utility: human-readable formatting
@@ -287,7 +301,7 @@ static void update_stats(void) {
         snprintf(buf, sizeof(buf),
                  "Total: %d  Active: %d  Queued/Paused: %d  Completed: %d%s",
                  total, active, queued, done,
-                 errors ? "  ⚠ Errors" : "");
+                 errors ? "  (Errori)" : "");
 
     gtk_label_set_text(GTK_LABEL(g_lbl_stats), buf);
     const char *cur = g_stack ? gtk_stack_get_visible_child_name(GTK_STACK(g_stack)) : NULL;
@@ -350,7 +364,7 @@ static void apply_status_badge(Download *dl) {
             break;
         case DL_ERROR:
             /* Extra class enables the pointer cursor + hover glow via CSS. */
-            gtk_label_set_text(GTK_LABEL(dl->lbl_status), "⚠ ERROR");
+            gtk_label_set_text(GTK_LABEL(dl->lbl_status), "ERROR");
             gtk_widget_add_css_class(dl->lbl_status, "status-error");
             gtk_widget_add_css_class(dl->lbl_status, "status-error-clickable");
             break;
@@ -703,18 +717,41 @@ static size_t ftp_read_cb(char *ptr, size_t size, size_t nmemb, void *userdata) 
  * ═══════════════════════════════════════════════════════════ */
 
 static void curl_common_opts(CURL *c, const char *url) {
-    CURL_SET(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    if (g_uc_last_user_agent[0]) {
+        CURL_SET(c, CURLOPT_USERAGENT, g_uc_last_user_agent);
+    } else {
+        CURL_SET(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    }
     CURL_SET(c, CURLOPT_FOLLOWLOCATION, 1L);
     CURL_SET(c, CURLOPT_MAXREDIRS, 15L);
     CURL_SET(c, CURLOPT_COOKIEFILE, "");        /* abilita il cookie engine */
+    if (g_uc_last_cookie[0]) {
+        CURL_SET(c, CURLOPT_COOKIE, g_uc_last_cookie);
+    }
     CURL_SET(c, CURLOPT_ACCEPT_ENCODING, "");
     CURL_SET(c, CURLOPT_AUTOREFERER, 1L);
     GUri *u = g_uri_parse(url, G_URI_FLAGS_PARSE_RELAXED, NULL);
-    if (u) {
-        char *ref = g_strdup_printf("%s://%s/", g_uri_get_scheme(u), g_uri_get_host(u));
-        CURL_SET(c, CURLOPT_REFERER, ref);      /* curl copia la stringa */
-        g_free(ref); g_uri_unref(u);
+    const char *host = u ? g_uri_get_host(u) : NULL;
+    if (g_uc_last_referer[0]) {
+        GUri *ref_u = g_uri_parse(g_uc_last_referer, G_URI_FLAGS_PARSE_RELAXED, NULL);
+        const char *ref_host = ref_u ? g_uri_get_host(ref_u) : NULL;
+        if (ref_host && host && (g_ascii_strcasecmp(ref_host, host) == 0 ||
+            strstr(host, "fishoilenjoyer.xyz") || strstr(host, "akirabox") ||
+            strstr(host, "fileditch") || strstr(host, "vikingfile") ||
+            strstr(host, "vik1ngfile"))) {
+            CURL_SET(c, CURLOPT_REFERER, g_uc_last_referer);
+        } else if (u && host) {
+            char *ref = g_strdup_printf("%s://%s/", g_uri_get_scheme(u), host);
+            CURL_SET(c, CURLOPT_REFERER, ref);
+            g_free(ref);
+        }
+        if (ref_u) g_uri_unref(ref_u);
+    } else if (u && host) {
+        char *ref = g_strdup_printf("%s://%s/", g_uri_get_scheme(u), host);
+        CURL_SET(c, CURLOPT_REFERER, ref);
+        g_free(ref);
     }
+    if (u) g_uri_unref(u);
     CURL_SET(c, CURLOPT_LOW_SPEED_LIMIT, 10L);
     CURL_SET(c, CURLOPT_LOW_SPEED_TIME,  60L);
 }
@@ -972,6 +1009,16 @@ static void load_settings(void) {
             strncpy(g_realdebrid_token, rd, sizeof(g_realdebrid_token) - 1);
             g_free(rd);
         }
+        if (g_key_file_has_key(kf, "General", "uc_enabled", NULL)) {
+            g_uc_enabled = g_key_file_get_boolean(kf, "General", "uc_enabled", NULL);
+        } else {
+            g_uc_enabled = TRUE;
+        }
+        if (g_key_file_has_key(kf, "General", "uc_headless", NULL)) {
+            g_uc_headless = g_key_file_get_boolean(kf, "General", "uc_headless", NULL);
+        } else {
+            g_uc_headless = TRUE;
+        }
 
         gsize n_src = 0;
         char **src_list = g_key_file_get_string_list(kf, "Catalog", "sources", &n_src, NULL);
@@ -984,7 +1031,15 @@ static void load_settings(void) {
             }
             g_strfreev(src_list);
         }
+        if (g_n_sources == 0) {
+            strncpy(g_catalog_sources[0], "https://raw.githubusercontent.com/Lotverp/PS-FTP-Downloader/main/catalog.json", sizeof(g_catalog_sources[0]) - 1);
+            g_n_sources = 1;
+        }
     } else {
+        if (g_n_sources == 0) {
+            strncpy(g_catalog_sources[0], "https://raw.githubusercontent.com/Lotverp/PS-FTP-Downloader/main/catalog.json", sizeof(g_catalog_sources[0]) - 1);
+            g_n_sources = 1;
+        }
         save_settings();
     }
     g_key_file_free(kf);
@@ -1002,6 +1057,8 @@ static void save_settings(void) {
     g_key_file_set_string(kf, "General", "tmp_dir", g_tmp_dir);
     g_key_file_set_string(kf, "General", "saved_passwords", g_saved_passwords);
     g_key_file_set_string(kf, "General", "realdebrid_token", g_realdebrid_token);
+    g_key_file_set_boolean(kf, "General", "uc_enabled", g_uc_enabled);
+    g_key_file_set_boolean(kf, "General", "uc_headless", g_uc_headless);
 
     if (g_n_sources > 0) {
         const char *src_ptrs[8];
@@ -1407,7 +1464,7 @@ static void load_css(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Error popup (main thread) — shown when the user clicks ⚠ ERROR
+ * Error popup (main thread) — shown when the user clicks ERROR
  * ═══════════════════════════════════════════════════════════ */
 
 static void show_error_popup(int dl_id) {
@@ -1875,20 +1932,48 @@ static void rm_dir_recursive(const char *path) {
 static int run_extract(const char *bin, const char *dir, const char *pass,
                        const char *archive, char *err, size_t errsz) {
     char *o = NULL;
-    char *p = (pass && pass[0]) ? g_strdup_printf("-p%s", pass) : NULL;
-    char *argv[9]; int n = 0;
+    char *p = NULL;
+    char *argv[10]; int n = 0;
     
-    argv[n++] = (char *)bin; argv[n++] = "x"; argv[n++] = "-y";
-    if (strcmp(bin, "unrar") == 0) {
-        if (p) argv[n++] = p;
+    if (strcmp(bin, "unar") == 0) {
+        argv[n++] = (char *)bin;
+        argv[n++] = "-f";  /* force overwrite */
+        argv[n++] = "-D";  /* do not create extra containing directory */
+        argv[n++] = "-o";
+        argv[n++] = (char *)dir;
+        if (pass && pass[0]) {
+            argv[n++] = "-p";
+            argv[n++] = (char *)pass;
+        }
+        argv[n++] = (char *)archive;
+    } else if (strcmp(bin, "unrar") == 0) {
+        argv[n++] = (char *)bin;
+        argv[n++] = "x";
+        argv[n++] = "-y";
+        if (pass && pass[0]) {
+            p = g_strdup_printf("-p%s", pass);
+            argv[n++] = p;
+        } else {
+            argv[n++] = "-p-";
+        }
         argv[n++] = (char *)archive;
         o = g_strdup_printf("%s/", dir);
         argv[n++] = o;
     } else {
+        /* 7z, 7zz, 7za */
+        argv[n++] = (char *)bin;
+        argv[n++] = "x";
+        argv[n++] = "-y";
         o = g_strdup_printf("-o%s", dir);
         argv[n++] = o;
-        if (p) argv[n++] = p;
-        argv[n++] = "--"; argv[n++] = (char *)archive;
+        if (pass && pass[0]) {
+            p = g_strdup_printf("-p%s", pass);
+            argv[n++] = p;
+        } else {
+            argv[n++] = "-p-";  /* disable password prompt on stdin */
+        }
+        argv[n++] = "--";
+        argv[n++] = (char *)archive;
     }
     argv[n] = NULL;
 
@@ -2085,22 +2170,76 @@ static void *split_archive_thread_fn_internal(void *arg) {
     post_update(dl);
 
     {
-        const char *bins[] = { "7zz", "7z", "7za", "unrar", NULL };
+        gboolean is_rar = (part_paths[0] && strcasestr(part_paths[0], ".rar") != NULL);
+        const char *rar_bins[] = { "7z", "7zz", "unar", "unrar", NULL };
+        const char *gen_bins[] = { "7z", "7zz", "unar", "7za", "unrar", NULL };
+        const char **bins = is_rar ? rar_bins : gen_bins;
+
+        /* Build list of candidate passwords to try:
+         * 1. sa->password (if set)
+         * 2. empty string "" (unencrypted archive)
+         * 3. [DLPSGAME.COM], DLPSGAME.COM, dlpsgame.com, SuperPSX
+         * 4. user saved passwords from settings
+         */
+        GPtrArray *cand_pass = g_ptr_array_new_with_free_func(g_free);
+        if (sa->password[0]) g_ptr_array_add(cand_pass, g_strdup(sa->password));
+        g_ptr_array_add(cand_pass, g_strdup(""));
+
+        const char *def_pass[] = { "[DLPSGAME.COM]", "DLPSGAME.COM", "dlpsgame.com", "SuperPSX", "superpsx", NULL };
+        for (int d = 0; def_pass[d]; d++) {
+            gboolean found = FALSE;
+            for (guint c = 0; c < cand_pass->len; c++) {
+                if (strcmp((char *)cand_pass->pdata[c], def_pass[d]) == 0) { found = TRUE; break; }
+            }
+            if (!found) g_ptr_array_add(cand_pass, g_strdup(def_pass[d]));
+        }
+
+        if (g_saved_passwords[0]) {
+            char *sp = g_strdup(g_saved_passwords);
+            char *tok = strtok(sp, ",;");
+            while (tok) {
+                char *clean = g_strstrip(g_strdup(tok));
+                if (clean[0]) {
+                    gboolean found = FALSE;
+                    for (guint c = 0; c < cand_pass->len; c++) {
+                        if (strcmp((char *)cand_pass->pdata[c], clean) == 0) { found = TRUE; break; }
+                    }
+                    if (!found) g_ptr_array_add(cand_pass, clean);
+                    else g_free(clean);
+                } else g_free(clean);
+                tok = strtok(NULL, ",;");
+            }
+            g_free(sp);
+        }
+
         int ret = -1;
         int last_meaningful_ret = -1;
-        for (int b = 0; bins[b]; b++) {
-            char tmp_err[512] = "";
-            ret = run_extract(bins[b], sa->tmp_dir, sa->password, part_paths[0],
-                              tmp_err, sizeof(tmp_err));
-            if (ret == 0) break;
-            if (ret != -1) {
-                last_meaningful_ret = ret;
-                strncpy(dl->error_msg, tmp_err, sizeof(dl->error_msg) - 1);
+        char best_err[512] = "";
+
+        for (guint p_idx = 0; p_idx < cand_pass->len; p_idx++) {
+            const char *curr_pass = (const char *)cand_pass->pdata[p_idx];
+            for (int b = 0; bins[b]; b++) {
+                char tmp_err[512] = "";
+                ret = run_extract(bins[b], sa->tmp_dir, curr_pass, part_paths[0],
+                                  tmp_err, sizeof(tmp_err));
+                if (ret == 0) {
+                    if (curr_pass[0]) strncpy(sa->password, curr_pass, sizeof(sa->password) - 1);
+                    break;
+                }
+                if (ret != -1) {
+                    last_meaningful_ret = ret;
+                    strncpy(best_err, tmp_err, sizeof(best_err) - 1);
+                }
             }
+            if (ret == 0) break;
         }
+        g_ptr_array_free(cand_pass, TRUE);
+
         if (ret != 0) {
             if (last_meaningful_ret == -1) {
-                snprintf(dl->error_msg, sizeof(dl->error_msg), "No extraction tool found. Please install p7zip-full or unrar.");
+                snprintf(dl->error_msg, sizeof(dl->error_msg), "No extraction tool found. Please install 7zip or unar.");
+            } else {
+                strncpy(dl->error_msg, best_err, sizeof(dl->error_msg) - 1);
             }
             dl->status = DL_ERROR;
             post_update(dl);
@@ -2593,16 +2732,24 @@ static void on_add_dialog_response(GtkDialog *dialog, int response,
         return;
     }
 
+G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    char *pass = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(g_entry_pass_single));
+G_GNUC_END_IGNORE_DEPRECATIONS
+
     if (strstr(url, "downloadgameps3.net") || strstr(url, "dlpsgame.com") || strstr(url, "filecrypt.cc")) {
-        show_toast("Attenzione: questo è un link protetto, non il file .pkg! Sbloccalo prima nel browser.");
+        if (g_uc_enabled && is_uc_resolver_available()) {
+            trigger_uc_resolve(url, (name && name[0]) ? name : "Download", pass, NULL, NULL);
+            if (pass) g_free(pass);
+            g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
+            gtk_window_destroy(GTK_WINDOW(dialog));
+            return;
+        }
+        if (pass) g_free(pass);
+        show_toast("Attenzione: link protetto! Abilita Undetected ChromeDriver o sbloccalo nel browser.");
         g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
         gtk_window_destroy(GTK_WINDOW(dialog));
         return;
     }
-
-G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-    char *pass = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(g_entry_pass_single));
-G_GNUC_END_IGNORE_DEPRECATIONS
 
     start_single_download(url, name, pass);
 
@@ -2736,6 +2883,142 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 }
 
 /* ═══════════════════════════════════════════════════════════
+ * Undetected ChromeDriver (UC) Bot Resolver helpers
+ * ═══════════════════════════════════════════════════════════ */
+
+static const char *get_python_binary(void) {
+    static char py_path[512] = "";
+    if (py_path[0]) return py_path;
+
+    const char *data_dir = g_get_user_data_dir();
+    char venv_py[512];
+    snprintf(venv_py, sizeof(venv_py), "%s/ps-ftp-downloader/venv/bin/python3", data_dir);
+    if (access(venv_py, X_OK) == 0) {
+        strncpy(py_path, venv_py, sizeof(py_path) - 1);
+        return py_path;
+    }
+
+    if (system("which python3 >/dev/null 2>&1") == 0) {
+        strncpy(py_path, "python3", sizeof(py_path) - 1);
+        return py_path;
+    }
+
+    return NULL;
+}
+
+static const char *get_uc_resolver_path(void) {
+    static char path[1024] = "";
+    if (path[0]) return path;
+
+    char exe_dir[512] = "";
+    ssize_t len = readlink("/proc/self/exe", exe_dir, sizeof(exe_dir) - 1);
+    if (len > 0) {
+        exe_dir[len] = '\0';
+        char *slash = strrchr(exe_dir, '/');
+        if (slash) *slash = '\0';
+        snprintf(path, sizeof(path), "%s/uc_resolver.py", exe_dir);
+        if (access(path, R_OK) == 0) return path;
+    }
+
+    snprintf(path, sizeof(path), "/usr/share/ps-ftp-downloader/uc_resolver.py");
+    if (access(path, R_OK) == 0) return path;
+
+    snprintf(path, sizeof(path), "./uc_resolver.py");
+    if (access(path, R_OK) == 0) return path;
+
+    snprintf(path, sizeof(path), "gtk-app/uc_resolver.py");
+    if (access(path, R_OK) == 0) return path;
+
+    path[0] = '\0';
+    return NULL;
+}
+
+static gboolean is_uc_resolver_available(void) {
+    const char *script = get_uc_resolver_path();
+    const char *py = get_python_binary();
+    if (!script || !py) return FALSE;
+
+    char cmd[1200];
+    snprintf(cmd, sizeof(cmd), "%s \"%s\" --check >/dev/null 2>&1", py, script);
+    return (system(cmd) == 0);
+}
+
+static char *get_uc_resolver_status_str(void) {
+    const char *script = get_uc_resolver_path();
+    const char *py = get_python_binary();
+    if (!script) {
+        return g_strdup("Script uc_resolver.py non trovato");
+    }
+    if (!py) {
+        return g_strdup("python3 non trovato nel sistema");
+    }
+
+    char cmd[1200];
+    snprintf(cmd, sizeof(cmd), "%s \"%s\" --check 2>/dev/null", py, script);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        return g_strdup("Errore esecuzione test resolver");
+    }
+
+    char buf[1024] = "";
+    if (fgets(buf, sizeof(buf), fp) != NULL) {
+        pclose(fp);
+        JsonParser *parser = json_parser_new();
+        if (json_parser_load_from_data(parser, buf, -1, NULL)) {
+            JsonNode *root = json_parser_get_root(parser);
+            if (root && JSON_NODE_HOLDS_OBJECT(root)) {
+                JsonObject *obj = json_node_get_object(root);
+                gboolean ready = json_object_has_member(obj, "ready") ? json_object_get_boolean_member(obj, "ready") : FALSE;
+                const char *browser = json_object_has_member(obj, "browser") ? json_object_get_string_member(obj, "browser") : NULL;
+                g_object_unref(parser);
+                if (ready) {
+                    return g_strdup_printf("Pronto all'uso (Browser: %s)", browser ? browser : "Chromium");
+                }
+            }
+            g_object_unref(parser);
+        }
+        return g_strdup("Dipendenze non trovate (clicca 'Setup Resolver')");
+    }
+    pclose(fp);
+    return g_strdup("Non configurato (clicca 'Setup Resolver')");
+}
+
+static void on_setup_uc_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    GtkWidget *lbl_status = (GtkWidget *)user_data;
+    char setup_script[1024] = "";
+    char exe_dir[512] = "";
+    ssize_t len = readlink("/proc/self/exe", exe_dir, sizeof(exe_dir) - 1);
+    if (len > 0) {
+        exe_dir[len] = '\0';
+        char *slash = strrchr(exe_dir, '/');
+        if (slash) *slash = '\0';
+        snprintf(setup_script, sizeof(setup_script), "%s/setup-bot-resolver.sh", exe_dir);
+    }
+    if (access(setup_script, X_OK) != 0) {
+        snprintf(setup_script, sizeof(setup_script), "/usr/share/ps-ftp-downloader/setup-bot-resolver.sh");
+    }
+    if (access(setup_script, X_OK) != 0) {
+        snprintf(setup_script, sizeof(setup_script), "gtk-app/setup-bot-resolver.sh");
+    }
+
+    if (access(setup_script, R_OK) == 0) {
+        char cmd[1200];
+        snprintf(cmd, sizeof(cmd), "bash \"%s\"", setup_script);
+        g_spawn_command_line_async(cmd, NULL);
+        show_toast("Setup avviato: installazione dipendenze in corso...");
+    } else {
+        show_toast("Esegui: pip install undetected-chromedriver selenium");
+    }
+
+    if (lbl_status && GTK_IS_LABEL(lbl_status)) {
+        char *st = get_uc_resolver_status_str();
+        gtk_label_set_text(GTK_LABEL(lbl_status), st);
+        g_free(st);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════
  * Settings dialog
  * ═══════════════════════════════════════════════════════════ */
 
@@ -2782,6 +3065,10 @@ static void on_settings_response(GtkDialog *dialog, int response,
                 g_strstrip(g_realdebrid_token);
             }
         }
+        if (g_chk_uc_enabled && GTK_IS_CHECK_BUTTON(g_chk_uc_enabled))
+            g_uc_enabled = gtk_check_button_get_active(GTK_CHECK_BUTTON(g_chk_uc_enabled));
+        if (g_chk_uc_headless && GTK_IS_CHECK_BUTTON(g_chk_uc_headless))
+            g_uc_headless = gtk_check_button_get_active(GTK_CHECK_BUTTON(g_chk_uc_headless));
 
         save_settings();
 
@@ -2803,7 +3090,7 @@ static void show_settings_dialog(GtkWindow *parent) {
         "Cancel", GTK_RESPONSE_CANCEL,
         "Save",   GTK_RESPONSE_OK, NULL);
 
-    gtk_widget_set_size_request(dialog, 440, -1);
+    gtk_widget_set_size_request(dialog, 460, -1);
 
     GtkWidget *content = gtk_dialog_get_content_area(GTK_DIALOG(dialog));
     gtk_orientable_set_orientation(GTK_ORIENTABLE(content), GTK_ORIENTATION_VERTICAL);
@@ -2857,6 +3144,41 @@ static void show_settings_dialog(GtkWindow *parent) {
 
     gtk_box_append(GTK_BOX(form), btn_test);
     gtk_box_append(GTK_BOX(form), lbl_test_result);
+
+    /* ── Undetected ChromeDriver Section ── */
+    GtkWidget *sep_uc = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_widget_set_margin_top(sep_uc, 8);
+    gtk_widget_set_margin_bottom(sep_uc, 4);
+    gtk_box_append(GTK_BOX(form), sep_uc);
+
+    GtkWidget *lbl_uc_sec = gtk_label_new("Undetected ChromeDriver (Automazione Bot / Link Protetti)");
+    gtk_label_set_xalign(GTK_LABEL(lbl_uc_sec), 0.0);
+    gtk_widget_add_css_class(lbl_uc_sec, "form-label");
+    gtk_box_append(GTK_BOX(form), lbl_uc_sec);
+
+    char *uc_st = get_uc_resolver_status_str();
+    GtkWidget *lbl_uc_status = gtk_label_new(uc_st);
+    gtk_label_set_xalign(GTK_LABEL(lbl_uc_status), 0.0);
+    gtk_box_append(GTK_BOX(form), lbl_uc_status);
+    g_free(uc_st);
+
+    GtkWidget *uc_box_opts = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_margin_top(uc_box_opts, 4);
+
+    g_chk_uc_enabled = gtk_check_button_new_with_label("Abilita Undetected ChromeDriver (Download Automatico / 1-Click)");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(g_chk_uc_enabled), g_uc_enabled);
+    gtk_box_append(GTK_BOX(uc_box_opts), g_chk_uc_enabled);
+
+    g_chk_uc_headless = gtk_check_button_new_with_label("Modalità Headless (avvia browser in background)");
+    gtk_check_button_set_active(GTK_CHECK_BUTTON(g_chk_uc_headless), g_uc_headless);
+    gtk_box_append(GTK_BOX(uc_box_opts), g_chk_uc_headless);
+
+    GtkWidget *btn_setup_uc = gtk_button_new_with_label("Setup Dipendenze Undetected ChromeDriver");
+    gtk_widget_add_css_class(btn_setup_uc, "btn-settings");
+    g_signal_connect(btn_setup_uc, "clicked", G_CALLBACK(on_setup_uc_clicked), lbl_uc_status);
+    gtk_box_append(GTK_BOX(uc_box_opts), btn_setup_uc);
+
+    gtk_box_append(GTK_BOX(form), uc_box_opts);
 
     gtk_box_append(GTK_BOX(content), form);
 
@@ -3121,6 +3443,7 @@ typedef struct {
     char name[256];
     char version[64];
     char category[64];
+    char region[32];
     char description[512];
     char icon_url[1024];
     char url[SA_URL_LEN];
@@ -3181,20 +3504,59 @@ static CatalogObject *catalog_object_new(const CatalogItem *item) {
     return obj;
 }
 
-/* Toast helper */
+/* Toast & Pre-Download Progress helpers */
+static gboolean on_toast_pulse_cb(gpointer user_data) {
+    (void)user_data;
+    if (g_toast_progress && GTK_IS_PROGRESS_BAR(g_toast_progress)) {
+        gtk_progress_bar_pulse(GTK_PROGRESS_BAR(g_toast_progress));
+    }
+    return G_SOURCE_CONTINUE;
+}
+
+static void hide_prep_progress(void) {
+    if (g_toast_pulse_id > 0) {
+        g_source_remove(g_toast_pulse_id);
+        g_toast_pulse_id = 0;
+    }
+    if (g_toast_progress && GTK_IS_WIDGET(g_toast_progress)) {
+        gtk_widget_set_visible(g_toast_progress, FALSE);
+    }
+}
+
 static gboolean on_hide_toast(gpointer user_data) {
     (void)user_data;
-    if (g_toast_label) gtk_widget_set_visible(g_toast_label, FALSE);
+    hide_prep_progress();
+    if (g_toast_box && GTK_IS_WIDGET(g_toast_box)) {
+        gtk_widget_set_visible(g_toast_box, FALSE);
+    }
     g_toast_timeout_id = 0;
     return G_SOURCE_REMOVE;
 }
 
 static void show_toast(const char *msg) {
-    if (!g_toast_label) return;
-    gtk_label_set_text(GTK_LABEL(g_toast_label), msg);
-    gtk_widget_set_visible(g_toast_label, TRUE);
+    if (!g_toast_box || !g_toast_label) return;
+    hide_prep_progress();
+    gtk_label_set_text(GTK_LABEL(g_toast_label), msg ? msg : "");
+    gtk_widget_set_visible(g_toast_box, TRUE);
     if (g_toast_timeout_id > 0) g_source_remove(g_toast_timeout_id);
-    g_toast_timeout_id = g_timeout_add_seconds(3, on_hide_toast, NULL);
+    g_toast_timeout_id = g_timeout_add_seconds(4, on_hide_toast, NULL);
+}
+
+static void show_prep_progress(const char *msg) {
+    if (!g_toast_box || !g_toast_label) return;
+    if (g_toast_timeout_id > 0) {
+        g_source_remove(g_toast_timeout_id);
+        g_toast_timeout_id = 0;
+    }
+    gtk_label_set_text(GTK_LABEL(g_toast_label), msg ? msg : "Preparazione download in corso...");
+    if (g_toast_progress && GTK_IS_PROGRESS_BAR(g_toast_progress)) {
+        gtk_widget_set_visible(g_toast_progress, TRUE);
+        gtk_progress_bar_set_pulse_step(GTK_PROGRESS_BAR(g_toast_progress), 0.08);
+        if (g_toast_pulse_id == 0) {
+            g_toast_pulse_id = g_timeout_add(70, on_toast_pulse_cb, NULL);
+        }
+    }
+    gtk_widget_set_visible(g_toast_box, TRUE);
 }
 
 /* Validation helpers */
@@ -3276,6 +3638,8 @@ static int parse_catalog_json(const char *json_data, gsize json_len, const char 
                         strncpy(it.version, json_object_get_string_member(iobj, "version"), sizeof(it.version) - 1);
                     if (json_object_has_member(iobj, "category"))
                         strncpy(it.category, json_object_get_string_member(iobj, "category"), sizeof(it.category) - 1);
+                    if (json_object_has_member(iobj, "region"))
+                        strncpy(it.region, json_object_get_string_member(iobj, "region"), sizeof(it.region) - 1);
                     if (json_object_has_member(iobj, "description"))
                         strncpy(it.description, json_object_get_string_member(iobj, "description"), sizeof(it.description) - 1);
                     if (json_object_has_member(iobj, "icon"))
@@ -3443,6 +3807,29 @@ static void *catalog_fetch_thread_fn(void *arg) {
         }
 
         if (mem.data) free(mem.data);
+    }
+
+    /* Fallback a file catalogo locale se nessun elemento e' stato scaricato (es. offline, primo avvio, o dev) */
+    if (total_count == 0) {
+        static const char *LOCAL_CATALOGS[] = {
+            "catalog.json",
+            "../catalog.json",
+            "/usr/share/ps-ftp-downloader/catalog.json",
+            "/usr/share/ps-ftp-downloader/catalog.json.example",
+            NULL
+        };
+        for (int i = 0; LOCAL_CATALOGS[i]; i++) {
+            char *data = NULL;
+            gsize len = 0;
+            if (g_file_get_contents(LOCAL_CATALOGS[i], &data, &len, NULL)) {
+                int parsed = parse_catalog_json(data, len, "Catalogo Locale", all_items, max_items);
+                g_free(data);
+                if (parsed > 0) {
+                    total_count = parsed;
+                    break;
+                }
+            }
+        }
     }
 
     CatalogFetchResult *res = malloc(sizeof(CatalogFetchResult));
@@ -3683,9 +4070,13 @@ static void on_catalog_item_setup(GtkSignalListItemFactory *self, GtkListItem *l
     GtkWidget *lbl_cat = gtk_label_new("");
     gtk_widget_add_css_class(lbl_cat, "catalog-cat");
 
+    GtkWidget *lbl_reg = gtk_label_new("");
+    gtk_widget_add_css_class(lbl_reg, "badge-region");
+
     gtk_box_append(GTK_BOX(top_row), lbl_name);
     gtk_box_append(GTK_BOX(top_row), lbl_ver);
     gtk_box_append(GTK_BOX(top_row), lbl_cat);
+    gtk_box_append(GTK_BOX(top_row), lbl_reg);
 
     GtkWidget *lbl_desc = gtk_label_new("");
     gtk_widget_add_css_class(lbl_desc, "catalog-desc");
@@ -3712,6 +4103,7 @@ static void on_catalog_item_setup(GtkSignalListItemFactory *self, GtkListItem *l
     g_object_set_data(G_OBJECT(card), "name", lbl_name);
     g_object_set_data(G_OBJECT(card), "ver", lbl_ver);
     g_object_set_data(G_OBJECT(card), "cat", lbl_cat);
+    g_object_set_data(G_OBJECT(card), "reg", lbl_reg);
     g_object_set_data(G_OBJECT(card), "desc", lbl_desc);
     g_object_set_data(G_OBJECT(card), "meta", lbl_meta);
     g_object_set_data(G_OBJECT(card), "btn", btn_inst);
@@ -3729,6 +4121,7 @@ static void on_catalog_item_bind(GtkSignalListItemFactory *self, GtkListItem *li
     GtkWidget *lbl_name = g_object_get_data(G_OBJECT(card), "name");
     GtkWidget *lbl_ver = g_object_get_data(G_OBJECT(card), "ver");
     GtkWidget *lbl_cat = g_object_get_data(G_OBJECT(card), "cat");
+    GtkWidget *lbl_reg = g_object_get_data(G_OBJECT(card), "reg");
     GtkWidget *lbl_desc = g_object_get_data(G_OBJECT(card), "desc");
     GtkWidget *lbl_meta = g_object_get_data(G_OBJECT(card), "meta");
     GtkWidget *btn = g_object_get_data(G_OBJECT(card), "btn");
@@ -3738,6 +4131,15 @@ static void on_catalog_item_bind(GtkSignalListItemFactory *self, GtkListItem *li
     gtk_label_set_text(GTK_LABEL(lbl_ver), obj->item->version[0] ? obj->item->version : "v1.0");
     gtk_label_set_text(GTK_LABEL(lbl_cat), obj->item->category[0] ? obj->item->category : "App");
     gtk_label_set_text(GTK_LABEL(lbl_desc), obj->item->description);
+
+    if (lbl_reg) {
+        if (obj->item->region[0] && strcasecmp(obj->item->region, "Tutte") != 0 && strcasecmp(obj->item->region, "ALL") != 0) {
+            gtk_label_set_text(GTK_LABEL(lbl_reg), obj->item->region);
+            gtk_widget_set_visible(lbl_reg, TRUE);
+        } else {
+            gtk_widget_set_visible(lbl_reg, FALSE);
+        }
+    }
 
     char meta_buf[1024] = "";
     if (obj->item->size > 0) {
@@ -3760,15 +4162,29 @@ static void on_catalog_item_bind(GtkSignalListItemFactory *self, GtkListItem *li
     g_signal_connect(btn, "clicked", G_CALLBACK(on_catalog_install_clicked), obj);
 }
 
+static int g_selected_catalog_region = 0; /* 0: Tutte, 1: Europa, 2: America */
+static GtkWidget *g_catalog_reg_dropdown = NULL;
+
 static gboolean catalog_category_filter_func(gpointer item, gpointer user_data) {
     (void)user_data;
     if (!item) return FALSE;
     CatalogObject *obj = CATALOG_OBJECT(item);
     if (!obj || !obj->item) return FALSE;
-    if (!g_selected_category[0] || strcmp(g_selected_category, "Tutte") == 0 || strcmp(g_selected_category, "All") == 0) {
-        return TRUE;
+    if (g_selected_category[0] && strcmp(g_selected_category, "Tutte") != 0 && strcmp(g_selected_category, "All") != 0) {
+        if (strcasecmp(obj->item->category, g_selected_category) != 0) return FALSE;
     }
-    return (strcasecmp(obj->item->category, g_selected_category) == 0);
+    if (g_selected_catalog_region == 1) { /* Europa */
+        if (obj->item->region[0] && strcasecmp(obj->item->region, "Tutte") != 0 && strcasecmp(obj->item->region, "ALL") != 0) {
+            if (strcasecmp(obj->item->region, "EUR") != 0 && strcasecmp(obj->item->region, "Europa") != 0 && !strstr(obj->item->region, "EUR"))
+                return FALSE;
+        }
+    } else if (g_selected_catalog_region == 2) { /* America */
+        if (obj->item->region[0] && strcasecmp(obj->item->region, "Tutte") != 0 && strcasecmp(obj->item->region, "ALL") != 0) {
+            if (strcasecmp(obj->item->region, "USA") != 0 && strcasecmp(obj->item->region, "America") != 0 && !strstr(obj->item->region, "USA"))
+                return FALSE;
+        }
+    }
+    return TRUE;
 }
 
 static void on_catalog_search_changed(GtkSearchEntry *entry, gpointer user_data) {
@@ -3793,6 +4209,15 @@ static void on_catalog_cat_selected(GtkDropDown *dropdown, GParamSpec *pspec, gp
     }
 }
 
+static void on_catalog_reg_selected(GtkDropDown *dropdown, GParamSpec *pspec, gpointer user_data) {
+    (void)pspec; (void)user_data;
+    guint pos = gtk_drop_down_get_selected(dropdown);
+    g_selected_catalog_region = (int)pos;
+    if (g_catalog_cat_filter) {
+        gtk_filter_changed(GTK_FILTER(g_catalog_cat_filter), GTK_FILTER_CHANGE_DIFFERENT);
+    }
+}
+
 /* Forward declarations */
 static void on_back_to_downloads_clicked(GtkButton *btn, gpointer user_data);
 static void on_sources_clicked(GtkButton *btn, gpointer user_data);
@@ -3811,14 +4236,14 @@ static GtkWidget *build_catalog_page(void) {
     GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_widget_add_css_class(toolbar, "catalog-toolbar");
 
-    GtkWidget *btn_back = gtk_button_new_with_label("← Torna ai Download");
+    GtkWidget *btn_back = gtk_button_new_with_label("Torna ai Download");
     gtk_widget_add_css_class(btn_back, "btn-nav");
     g_signal_connect(btn_back, "clicked", G_CALLBACK(on_back_to_downloads_clicked), NULL);
 
     g_catalog_search_entry = gtk_search_entry_new();
     gtk_widget_add_css_class(g_catalog_search_entry, "catalog-search");
     gtk_widget_set_hexpand(g_catalog_search_entry, TRUE);
-    g_object_set(g_catalog_search_entry, "placeholder-text", "Cerca nel catalogo...", NULL);
+    g_object_set(g_catalog_search_entry, "placeholder-text", "Cerca in Tools...", NULL);
 
     g_catalog_cat_dropdown = gtk_drop_down_new(NULL, NULL);
     gtk_widget_add_css_class(g_catalog_cat_dropdown, "catalog-dropdown");
@@ -3827,6 +4252,15 @@ static GtkWidget *build_catalog_page(void) {
     gtk_drop_down_set_model(GTK_DROP_DOWN(g_catalog_cat_dropdown), G_LIST_MODEL(init_cats));
     g_object_unref(init_cats);
     g_signal_connect(g_catalog_cat_dropdown, "notify::selected-item", G_CALLBACK(on_catalog_cat_selected), NULL);
+
+    GtkStringList *reg_list = gtk_string_list_new(NULL);
+    gtk_string_list_append(reg_list, "Regione: Tutte");
+    gtk_string_list_append(reg_list, "Europa (EUR)");
+    gtk_string_list_append(reg_list, "America (USA)");
+    g_catalog_reg_dropdown = gtk_drop_down_new(G_LIST_MODEL(reg_list), NULL);
+    gtk_widget_add_css_class(g_catalog_reg_dropdown, "catalog-dropdown");
+    g_object_unref(reg_list);
+    g_signal_connect(g_catalog_reg_dropdown, "notify::selected", G_CALLBACK(on_catalog_reg_selected), NULL);
 
     GtkWidget *btn_sources = gtk_button_new_with_label("Sorgenti");
     gtk_widget_add_css_class(btn_sources, "btn-sources");
@@ -3839,6 +4273,7 @@ static GtkWidget *build_catalog_page(void) {
     gtk_box_append(GTK_BOX(toolbar), btn_back);
     gtk_box_append(GTK_BOX(toolbar), g_catalog_search_entry);
     gtk_box_append(GTK_BOX(toolbar), g_catalog_cat_dropdown);
+    gtk_box_append(GTK_BOX(toolbar), g_catalog_reg_dropdown);
     gtk_box_append(GTK_BOX(toolbar), btn_sources);
     gtk_box_append(GTK_BOX(toolbar), btn_refresh);
 
@@ -3974,7 +4409,7 @@ static void show_sources_dialog(GtkWindow *parent) {
     }
 
     g_sources_dialog = gtk_dialog_new_with_buttons(
-        "Sorgenti Feed Catalogo", parent,
+        "Sorgenti Feed Tools", parent,
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
         "Chiudi", GTK_RESPONSE_CLOSE, NULL);
 
@@ -3989,7 +4424,7 @@ static void show_sources_dialog(GtkWindow *parent) {
     gtk_widget_set_margin_top(form, 16);
     gtk_widget_set_margin_bottom(form, 16);
 
-    GtkWidget *lbl_add = gtk_label_new("Aggiungi Feed Catalogo (URL https):");
+    GtkWidget *lbl_add = gtk_label_new("Aggiungi Feed Tools (URL https):");
     gtk_label_set_xalign(GTK_LABEL(lbl_add), 0.0);
     gtk_widget_add_css_class(lbl_add, "form-label");
 
@@ -4020,7 +4455,7 @@ static void show_sources_dialog(GtkWindow *parent) {
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(g_sources_list_box), GTK_SELECTION_NONE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), g_sources_list_box);
 
-    GtkWidget *btn_refresh_sources = gtk_button_new_with_label("Aggiorna Catalogo Adesso");
+    GtkWidget *btn_refresh_sources = gtk_button_new_with_label("Aggiorna Tools Adesso");
     gtk_widget_add_css_class(btn_refresh_sources, "btn-settings");
     gtk_widget_set_margin_top(btn_refresh_sources, 8);
     g_signal_connect(btn_refresh_sources, "clicked", G_CALLBACK(on_refresh_catalog_clicked), NULL);
@@ -4049,6 +4484,10 @@ static void on_catalog_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn; (void)user_data;
     if (g_stack) {
         gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "catalog");
+        guint n_items = g_catalog_store ? g_list_model_get_n_items(G_LIST_MODEL(g_catalog_store)) : 0;
+        if (n_items == 0) {
+            trigger_catalog_fetch_async();
+        }
     }
 }
 
@@ -4090,6 +4529,8 @@ typedef struct {
     char cover_url[2048];
     char shot_urls[2][1024];
     char cusa[32];
+    char platform[32];
+    char region[32];
     char genre[64];
     char year[16];
     char password[128];
@@ -4153,12 +4594,16 @@ static int g_dlps_current_page = 1;
 static int g_dlps_total_pages = 1;
 static int g_dlps_total_items = 0;
 static char g_dlps_search_query[256] = "";
+static int g_dlps_region_filter = 0; /* 0: Tutte, 1: Europa (EUR), 2: America (USA), 3: Giappone / Asia */
+static int g_dlps_console_filter = 0; /* 0: Tutte, 1: PS5, 2: PS4, 3: PS3, 4: PS2 */
 static gboolean g_dlps_is_loading = FALSE;
 static GtkWidget *g_dlps_spinner = NULL;
 static GtkWidget *g_dlps_lbl_page = NULL;
 static GtkWidget *g_dlps_btn_prev = NULL;
 static GtkWidget *g_dlps_btn_next = NULL;
 static GtkWidget *g_dlps_search_entry = NULL;
+static GtkWidget *g_dlps_region_dropdown = NULL;
+static GtkWidget *g_dlps_console_dropdown = NULL;
 
 static void unescape_html(char *str) {
     if (!str) return;
@@ -4342,7 +4787,55 @@ static void extract_dlps_links(const char *html_text, DlpsGame *g) {
     g_regex_unref(a_re);
 }
 
-static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame *out_games, int max_games) {
+static void extract_dlps_region(const char *decoded, const char *html_content, DlpsGame *g) {
+    if (!g) return;
+    g->region[0] = '\0';
+    GRegex *reg_re = g_regex_new("(?:CUSA|PPSA|NPUB|NPEB|BLUS|BLES|NPUA|NPHA|ULUS|ULES|UCUS)\\d{5}\\s*(?:&#8211;|-|–|\\s)*\\s*(USA|EUR|EUROPE|AMERICA|ASIA|JAPAN|JPN)", G_REGEX_CASELESS, 0, NULL);
+    GMatchInfo *reg_info = NULL;
+    gboolean matched = FALSE;
+    if (decoded && g_regex_match(reg_re, decoded, 0, &reg_info)) {
+        matched = TRUE;
+    } else if (html_content && g_regex_match(reg_re, html_content, 0, &reg_info)) {
+        matched = TRUE;
+    }
+    if (matched) {
+        char *r = g_match_info_fetch(reg_info, 1);
+        if (r) {
+            if (g_ascii_strcasecmp(r, "USA") == 0 || g_ascii_strcasecmp(r, "AMERICA") == 0) {
+                strncpy(g->region, "USA", sizeof(g->region) - 1);
+            } else if (g_ascii_strcasecmp(r, "EUR") == 0 || g_ascii_strcasecmp(r, "EUROPE") == 0) {
+                strncpy(g->region, "EUR", sizeof(g->region) - 1);
+            } else if (g_ascii_strcasecmp(r, "JPN") == 0 || g_ascii_strcasecmp(r, "JAPAN") == 0) {
+                strncpy(g->region, "JPN", sizeof(g->region) - 1);
+            } else if (g_ascii_strcasecmp(r, "ASIA") == 0) {
+                strncpy(g->region, "ASIA", sizeof(g->region) - 1);
+            }
+            g_free(r);
+        }
+    }
+    g_match_info_free(reg_info);
+    g_regex_unref(reg_re);
+
+    /* Heuristic / fallback */
+    if (!g->region[0]) {
+        const char *d = decoded ? decoded : "";
+        const char *h = html_content ? html_content : "";
+        if (strstr(d, "USA") || strstr(h, "USA") || strstr(g->title, "USA") ||
+            strncmp(g->cusa, "BLUS", 4) == 0 || strncmp(g->cusa, "NPUB", 4) == 0 || strncmp(g->cusa, "ULUS", 4) == 0) {
+            strncpy(g->region, "USA", sizeof(g->region) - 1);
+        } else if (strstr(d, "EUR") || strstr(h, "EUR") || strstr(g->title, "EUR") ||
+                   strncmp(g->cusa, "BLES", 4) == 0 || strncmp(g->cusa, "NPEB", 4) == 0 || strncmp(g->cusa, "ULES", 4) == 0) {
+            strncpy(g->region, "EUR", sizeof(g->region) - 1);
+        } else if (strstr(d, "JPN") || strstr(h, "JPN") || strstr(g->title, "JPN") ||
+                   strncmp(g->cusa, "BLJM", 4) == 0 || strncmp(g->cusa, "NPJB", 4) == 0) {
+            strncpy(g->region, "JPN", sizeof(g->region) - 1);
+        } else if (strstr(d, "ASIA") || strstr(h, "ASIA") || strstr(g->title, "ASIA")) {
+            strncpy(g->region, "ASIA", sizeof(g->region) - 1);
+        }
+    }
+}
+
+static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame *out_games, int max_games, int region_filter) {
     if (!json_data || json_len == 0 || max_games <= 0) return 0;
     JsonParser *parser = json_parser_new();
     GError *err = NULL;
@@ -4414,8 +4907,8 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                     }
                 }
 
-                /* 2. Extract CUSA code */
-                GRegex *cusa_re = g_regex_new("CUSA\\d{5}", G_REGEX_CASELESS, 0, NULL);
+                /* 2. Extract Title ID (PS5 PPSA, PS4 CUSA, PS3/PSP NPUB/BLES etc.) */
+                GRegex *cusa_re = g_regex_new("(CUSA|PPSA|NPUB|NPEB|BLUS|BLES|NPUA|NPHA|ULUS|ULES|UCUS)\\d{5}", G_REGEX_CASELESS, 0, NULL);
                 GMatchInfo *minfo = NULL;
                 if (g_regex_match(cusa_re, html_content, 0, &minfo)) {
                     char *c = g_match_info_fetch(minfo, 0);
@@ -4426,6 +4919,33 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 }
                 g_match_info_free(minfo);
                 g_regex_unref(cusa_re);
+
+                /* Rilevamento piattaforma console da categorie WP, Title ID o titolo */
+                if (json_object_has_member(obj, "categories")) {
+                    JsonArray *cats = json_object_get_array_member(obj, "categories");
+                    guint clen = json_array_get_length(cats);
+                    for (guint cidx = 0; cidx < clen; cidx++) {
+                        gint64 cid = json_array_get_int_element(cats, cidx);
+                        if (cid == 63019) { strncpy(g.platform, "PS5", sizeof(g.platform) - 1); break; }
+                        else if (cid == 4370) { strncpy(g.platform, "PS4", sizeof(g.platform) - 1); break; }
+                        else if (cid == 64) { strncpy(g.platform, "PS3", sizeof(g.platform) - 1); break; }
+                        else if (cid == 5917) { strncpy(g.platform, "PS2", sizeof(g.platform) - 1); break; }
+                    }
+                }
+                if (!g.platform[0]) {
+                    if (strncmp(g.cusa, "PPSA", 4) == 0) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
+                    else if (strncmp(g.cusa, "CUSA", 4) == 0) strncpy(g.platform, "PS4", sizeof(g.platform) - 1);
+                    else if (strncmp(g.cusa, "BLUS", 4) == 0 || strncmp(g.cusa, "BLES", 4) == 0 ||
+                             strncmp(g.cusa, "NPUB", 4) == 0 || strncmp(g.cusa, "NPEB", 4) == 0)
+                        strncpy(g.platform, "PS3", sizeof(g.platform) - 1);
+                    else if (strncmp(g.cusa, "SLUS", 4) == 0 || strncmp(g.cusa, "SLES", 4) == 0 ||
+                             strncmp(g.cusa, "SCES", 4) == 0)
+                        strncpy(g.platform, "PS2", sizeof(g.platform) - 1);
+                    else if (strstr(g.title, "PS5") || strstr(html_content, "PS5")) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
+                    else if (strstr(g.title, "PS4") || strstr(html_content, "PS4")) strncpy(g.platform, "PS4", sizeof(g.platform) - 1);
+                    else if (strstr(g.title, "PS3") || strstr(html_content, "PS3")) strncpy(g.platform, "PS3", sizeof(g.platform) - 1);
+                    else if (strstr(g.title, "PS2") || strstr(html_content, "PS2")) strncpy(g.platform, "PS2", sizeof(g.platform) - 1);
+                }
 
                 /* 3. Extract GENRE and RELEASE year from table */
                 GRegex *genre_re = g_regex_new("GENRE.*?<td[^>]*>.*?<span[^>]*>([^<]+)</span>", G_REGEX_DOTALL | G_REGEX_CASELESS, 0, NULL);
@@ -4473,9 +4993,9 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                             g_match_info_free(pwd_info);
                             g_regex_unref(pwd_re);
 
-                            /* Fallback CUSA if not in table */
+                            /* Fallback Title ID if not in table */
                             if (!g.cusa[0]) {
-                                GRegex *cusa_re2 = g_regex_new("CUSA\\d{5}", G_REGEX_CASELESS, 0, NULL);
+                                GRegex *cusa_re2 = g_regex_new("(CUSA|PPSA|NPUB|NPEB|BLUS|BLES|NPUA|NPHA|ULUS|ULES|UCUS)\\d{5}", G_REGEX_CASELESS, 0, NULL);
                                 GMatchInfo *cusa_info2 = NULL;
                                 if (g_regex_match(cusa_re2, decoded, 0, &cusa_info2)) {
                                     char *c = g_match_info_fetch(cusa_info2, 0);
@@ -4488,6 +5008,8 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                                 g_regex_unref(cusa_re2);
                             }
 
+                            extract_dlps_region(decoded, html_content, &g);
+
                             /* Extract links with category prefix and hoster tags */
                             extract_dlps_links(decoded, &g);
 
@@ -4499,6 +5021,19 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 }
                 g_match_info_free(minfo);
                 g_regex_unref(pl_re);
+
+                if (!g.region[0]) {
+                    extract_dlps_region(NULL, html_content, &g);
+                }
+
+                /* Client-side filter: if user requested Europa and detected region is definitely USA/JPN, skip */
+                if (region_filter == 1 && g.region[0] && strcmp(g.region, "EUR") != 0 && strcmp(g.region, "EUROPE") != 0) {
+                    continue;
+                }
+                /* If user requested America and detected region is definitely EUR/JPN, skip */
+                if (region_filter == 2 && g.region[0] && strcmp(g.region, "USA") != 0 && strcmp(g.region, "AMERICA") != 0) {
+                    continue;
+                }
 
                 if (g.n_links == 0 && g.post_url[0]) {
                     strncpy(g.links[0].name, "Pagina DLPSGame", sizeof(g.links[0].name) - 1);
@@ -4555,6 +5090,8 @@ typedef struct {
 
 typedef struct {
     char query[256];
+    int region;
+    int console;
     int page;
     int per_page;
 } DlpsFetchReq;
@@ -4574,7 +5111,7 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
 
     g_dlps_current_page = res->page;
     g_dlps_total_pages = res->total_pages > 0 ? res->total_pages : 1;
-    g_dlps_total_items = res->total_items;
+    g_dlps_total_items = (res->total_items > 0) ? res->total_items : res->count;
 
     g_list_store_remove_all(g_dlps_store);
     for (int i = 0; i < res->count; i++) {
@@ -4585,9 +5122,19 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
 
     if (g_dlps_lbl_page) {
         char pbuf[512];
-        if (res->total_items > 0) {
-            snprintf(pbuf, sizeof(pbuf), "Pagina %d di %d  •  %d giochi",
-                     g_dlps_current_page, g_dlps_total_pages, g_dlps_total_items);
+        if (res->total_items > 0 || res->count > 0) {
+            const char *cons_suffix = "";
+            if (g_dlps_console_filter == 1) cons_suffix = "  •  PS5";
+            else if (g_dlps_console_filter == 2) cons_suffix = "  •  PS4";
+            else if (g_dlps_console_filter == 3) cons_suffix = "  •  PS3";
+            else if (g_dlps_console_filter == 4) cons_suffix = "  •  PS2";
+
+            const char *reg_suffix = "";
+            if (g_dlps_region_filter == 1) reg_suffix = "  •  Europa";
+            else if (g_dlps_region_filter == 2) reg_suffix = "  •  America";
+            else if (g_dlps_region_filter == 3) reg_suffix = "  •  Giappone/Asia";
+            snprintf(pbuf, sizeof(pbuf), "Pagina %d di %d  •  %d giochi%s%s",
+                     g_dlps_current_page, g_dlps_total_pages, g_dlps_total_items, cons_suffix, reg_suffix);
         } else if (res->error_msg[0]) {
             snprintf(pbuf, sizeof(pbuf), "Errore: %s", res->error_msg);
         } else {
@@ -4618,16 +5165,47 @@ static void *dlps_fetch_thread_fn(void *arg) {
     }
 
     char fetch_url[1024];
+    char combined_query[300] = "";
     if (req->query[0]) {
-        char *esc = curl_easy_escape(c, req->query, 0);
+        strncpy(combined_query, req->query, sizeof(combined_query) - 1);
+        if (req->region == 1) {
+            strncat(combined_query, " EUR", sizeof(combined_query) - strlen(combined_query) - 1);
+        } else if (req->region == 2) {
+            strncat(combined_query, " USA", sizeof(combined_query) - strlen(combined_query) - 1);
+        } else if (req->region == 3) {
+            strncat(combined_query, " JPN", sizeof(combined_query) - strlen(combined_query) - 1);
+        }
+    } else {
+        if (req->region == 1) {
+            strncpy(combined_query, "EUR", sizeof(combined_query) - 1);
+        } else if (req->region == 2) {
+            strncpy(combined_query, "USA", sizeof(combined_query) - 1);
+        } else if (req->region == 3) {
+            strncpy(combined_query, "JPN", sizeof(combined_query) - 1);
+        }
+    }
+
+    int cat_id = 0;
+    if (req->console == 1) cat_id = 63019;      /* PS5 */
+    else if (req->console == 2) cat_id = 4370;  /* PS4 */
+    else if (req->console == 3) cat_id = 64;    /* PS3 */
+    else if (req->console == 4) cat_id = 5917;  /* PS2 */
+
+    char cat_param[64] = "";
+    if (cat_id > 0) {
+        snprintf(cat_param, sizeof(cat_param), "&categories=%d", cat_id);
+    }
+
+    if (combined_query[0]) {
+        char *esc = curl_easy_escape(c, combined_query, 0);
         snprintf(fetch_url, sizeof(fetch_url),
-                 "https://dlpsgame.com/wp-json/wp/v2/posts?categories=4370&per_page=%d&page=%d&search=%s",
-                 req->per_page, req->page, esc ? esc : req->query);
+                 "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d&search=%s%s&_fields=id,link,title,content,categories",
+                 req->per_page, req->page, esc ? esc : combined_query, cat_param);
         if (esc) curl_free(esc);
     } else {
         snprintf(fetch_url, sizeof(fetch_url),
-                 "https://dlpsgame.com/wp-json/wp/v2/posts?categories=4370&per_page=%d&page=%d",
-                 req->per_page, req->page);
+                 "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d%s&_fields=id,link,title,content,categories",
+                 req->per_page, req->page, cat_param);
     }
 
     DlpsMem chunk = { malloc(1), 0 };
@@ -4639,8 +5217,8 @@ static void *dlps_fetch_thread_fn(void *arg) {
     curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
 
     CURLcode res = curl_easy_perform(c);
@@ -4650,7 +5228,7 @@ static void *dlps_fetch_thread_fn(void *arg) {
         res_data->total_items = totals[0];
         res_data->total_pages = totals[1];
         DlpsGame *games = calloc(req->per_page, sizeof(DlpsGame));
-        int n = parse_dlps_games_json(chunk.data, chunk.size, games, req->per_page);
+        int n = parse_dlps_games_json(chunk.data, chunk.size, games, req->per_page, req->region);
         res_data->games = games;
         res_data->count = n;
     } else {
@@ -4679,8 +5257,10 @@ static void trigger_dlps_fetch(const char *query, int page) {
         req->query[0] = '\0';
         g_dlps_search_query[0] = '\0';
     }
+    req->region = g_dlps_region_filter;
+    req->console = g_dlps_console_filter;
     req->page = page > 0 ? page : 1;
-    req->per_page = 24;
+    req->per_page = 12;
 
     pthread_t th;
     if (pthread_create(&th, NULL, dlps_fetch_thread_fn, req) == 0) {
@@ -4704,6 +5284,9 @@ typedef struct {
 typedef struct AutoSession AutoSession;
 static void auto_session_next(AutoSession *sess);
 static void auto_session_free(AutoSession *sess);
+static gboolean dlps_dispatch_link(const char *url, const char *title,
+                                   const char *pass, gboolean from_clipboard,
+                                   AutoSession *sess);
 
 typedef struct {
     char url[2048];
@@ -4762,7 +5345,7 @@ static gboolean on_mediafire_resolved_idle(gpointer user_data) {
         start_single_download(res->direct_url, dest_name, res->password);
         auto_session_free(res->sess);
     } else if (res->sess) {
-        show_toast("Mediafire non disponibile: provo il link successivo...");
+        show_prep_progress("Mediafire non disponibile: tentativo con link successivo...");
         auto_session_next(res->sess);
     } else {
         show_toast("Impossibile risolvere il link Mediafire (file rimosso da DMCA o non disponibile).");
@@ -4820,7 +5403,7 @@ static void *mediafire_resolve_thread(void *arg) {
 }
 
 static void trigger_mediafire_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess) {
-    show_toast("Risoluzione link diretto Mediafire...");
+    show_prep_progress("Risoluzione link diretto Mediafire in corso...");
     DlpsActionData *req = calloc(1, sizeof(DlpsActionData));
     strncpy(req->url, url, sizeof(req->url) - 1);
     strncpy(req->game_title, game_title, sizeof(req->game_title) - 1);
@@ -4868,7 +5451,7 @@ static gboolean on_realdebrid_resolved_idle(gpointer user_data) {
         show_toast("Link sbloccato con Real-Debrid: download avviato!");
         auto_session_free(res->sess);
     } else if (res->sess) {
-        show_toast("Real-Debrid non ha sbloccato il link: provo il successivo...");
+        show_prep_progress("Real-Debrid non ha sbloccato il link: provo il successivo...");
         auto_session_next(res->sess);
     } else {
         char buf[300];
@@ -4950,7 +5533,7 @@ static void *realdebrid_resolve_thread(void *arg) {
 }
 
 static void trigger_realdebrid_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess) {
-    show_toast("Sblocco link tramite Real-Debrid...");
+    show_prep_progress("Sblocco link tramite Real-Debrid in corso... Preparazione download");
     DlpsActionData *req = calloc(1, sizeof(DlpsActionData));
     strncpy(req->url, url, sizeof(req->url) - 1);
     strncpy(req->game_title, game_title, sizeof(req->game_title) - 1);
@@ -4972,6 +5555,193 @@ static void on_dlps_realdebrid_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     DlpsActionData *d = (DlpsActionData *)user_data;
     trigger_realdebrid_resolve(d->url, d->game_title, d->password, d->dialog, NULL);
+    free(d);
+}
+
+/* ═══════════════════════════════════════════════════════════
+ * Undetected ChromeDriver (UC) Background Resolver
+ * ═══════════════════════════════════════════════════════════ */
+typedef struct {
+    int success;
+    char resolved_url[2048];
+    char game_title[256];
+    char password[128];
+    char error_msg[256];
+    char cookie[4096];
+    char user_agent[512];
+    char referer[2048];
+    GtkWidget *dialog;
+    AutoSession *sess;
+} UcResolveRes;
+
+static gboolean on_uc_resolved_idle(gpointer user_data) {
+    UcResolveRes *res = (UcResolveRes *)user_data;
+    if (res->success && res->resolved_url[0]) {
+        if (res->dialog && GTK_IS_WINDOW(res->dialog)) {
+            gtk_window_destroy(GTK_WINDOW(res->dialog));
+        }
+        if (res->cookie[0]) {
+            strncpy(g_uc_last_cookie, res->cookie, sizeof(g_uc_last_cookie) - 1);
+            g_uc_last_cookie[sizeof(g_uc_last_cookie) - 1] = '\0';
+        }
+        if (res->user_agent[0]) {
+            strncpy(g_uc_last_user_agent, res->user_agent, sizeof(g_uc_last_user_agent) - 1);
+            g_uc_last_user_agent[sizeof(g_uc_last_user_agent) - 1] = '\0';
+        }
+        if (res->referer[0]) {
+            strncpy(g_uc_last_referer, res->referer, sizeof(g_uc_last_referer) - 1);
+            g_uc_last_referer[sizeof(g_uc_last_referer) - 1] = '\0';
+        }
+        show_toast("Link sbloccato con Undetected ChromeDriver!");
+        if (!dlps_dispatch_link(res->resolved_url, res->game_title, res->password, FALSE, NULL)) {
+            char dest_name[256];
+            snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+            start_single_download(res->resolved_url, dest_name, res->password);
+        }
+        auto_session_free(res->sess);
+    } else if (res->sess) {
+        show_prep_progress("Risolutore UC: tentativo con link successivo...");
+        auto_session_next(res->sess);
+    } else {
+        char buf[300];
+        snprintf(buf, sizeof(buf), "Risolutore UC: %s", res->error_msg[0] ? res->error_msg : "Sblocco non riuscito");
+        show_toast(buf);
+    }
+    free(res);
+    return G_SOURCE_REMOVE;
+}
+
+static void *uc_resolve_thread(void *arg) {
+    DlpsActionData *req = (DlpsActionData *)arg;
+    UcResolveRes *res = calloc(1, sizeof(UcResolveRes));
+    strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
+    strncpy(res->password, req->password, sizeof(res->password) - 1);
+    res->dialog = req->dialog;
+    res->sess = req->sess;
+
+    const char *script_path = get_uc_resolver_path();
+    const char *py_bin = get_python_binary();
+
+    if (!script_path || !py_bin) {
+        snprintf(res->error_msg, sizeof(res->error_msg), "uc_resolver.py o python3 non trovato");
+        res->success = 0;
+        free(req);
+        g_idle_add(on_uc_resolved_idle, res);
+        return NULL;
+    }
+
+    GPtrArray *argv_arr = g_ptr_array_new();
+    g_ptr_array_add(argv_arr, (gpointer)py_bin);
+    g_ptr_array_add(argv_arr, (gpointer)script_path);
+    g_ptr_array_add(argv_arr, (gpointer)req->url);
+    if (req->password[0]) {
+        g_ptr_array_add(argv_arr, (gpointer)"--password");
+        g_ptr_array_add(argv_arr, (gpointer)req->password);
+    }
+    if (g_uc_headless) {
+        g_ptr_array_add(argv_arr, (gpointer)"--headless");
+    }
+    g_ptr_array_add(argv_arr, (gpointer)"--timeout");
+    g_ptr_array_add(argv_arr, (gpointer)"65");
+    g_ptr_array_add(argv_arr, NULL);
+
+    char *stdout_buf = NULL;
+    char *stderr_buf = NULL;
+    int exit_status = 0;
+    GError *err = NULL;
+
+    gboolean spawned = g_spawn_sync(
+        NULL,
+        (char **)argv_arr->pdata,
+        NULL,
+        G_SPAWN_SEARCH_PATH,
+        NULL,
+        NULL,
+        &stdout_buf,
+        &stderr_buf,
+        &exit_status,
+        &err
+    );
+    g_ptr_array_free(argv_arr, TRUE);
+
+    if (spawned && exit_status == 0 && stdout_buf) {
+        JsonParser *parser = json_parser_new();
+        if (json_parser_load_from_data(parser, stdout_buf, -1, NULL)) {
+            JsonNode *root = json_parser_get_root(parser);
+            if (root && JSON_NODE_HOLDS_OBJECT(root)) {
+                JsonObject *obj = json_node_get_object(root);
+                if (json_object_has_member(obj, "success") && json_object_get_boolean_member(obj, "success")) {
+                    if (json_object_has_member(obj, "url")) {
+                        const char *u = json_object_get_string_member(obj, "url");
+                        if (u && u[0]) {
+                            strncpy(res->resolved_url, u, sizeof(res->resolved_url) - 1);
+                            res->success = 1;
+                        }
+                    }
+                    if (json_object_has_member(obj, "cookie")) {
+                        const char *ck = json_object_get_string_member(obj, "cookie");
+                        if (ck && ck[0]) strncpy(res->cookie, ck, sizeof(res->cookie) - 1);
+                    }
+                    if (json_object_has_member(obj, "user_agent")) {
+                        const char *ua = json_object_get_string_member(obj, "user_agent");
+                        if (ua && ua[0]) strncpy(res->user_agent, ua, sizeof(res->user_agent) - 1);
+                    }
+                    if (json_object_has_member(obj, "referer")) {
+                        const char *rf = json_object_get_string_member(obj, "referer");
+                        if (rf && rf[0]) strncpy(res->referer, rf, sizeof(res->referer) - 1);
+                    }
+                    if (json_object_has_member(obj, "password")) {
+                        const char *pw = json_object_get_string_member(obj, "password");
+                        if (pw && pw[0]) strncpy(res->password, pw, sizeof(res->password) - 1);
+                    }
+                } else if (json_object_has_member(obj, "message")) {
+                    strncpy(res->error_msg, json_object_get_string_member(obj, "message"), sizeof(res->error_msg) - 1);
+                }
+            }
+        }
+        g_object_unref(parser);
+    } else {
+        if (err) {
+            strncpy(res->error_msg, err->message, sizeof(res->error_msg) - 1);
+            g_error_free(err);
+        } else if (stderr_buf && stderr_buf[0]) {
+            strncpy(res->error_msg, stderr_buf, sizeof(res->error_msg) - 1);
+        } else {
+            strncpy(res->error_msg, "Risoluzione link fallita o timeout", sizeof(res->error_msg) - 1);
+        }
+    }
+
+    if (stdout_buf) g_free(stdout_buf);
+    if (stderr_buf) g_free(stderr_buf);
+    free(req);
+
+    g_idle_add(on_uc_resolved_idle, res);
+    return NULL;
+}
+
+static void trigger_uc_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess) {
+    show_prep_progress("Undetected ChromeDriver: risoluzione protezioni in corso...");
+    DlpsActionData *req = calloc(1, sizeof(DlpsActionData));
+    strncpy(req->url, url, sizeof(req->url) - 1);
+    strncpy(req->game_title, game_title, sizeof(req->game_title) - 1);
+    strncpy(req->password, password ? password : "", sizeof(req->password) - 1);
+    req->dialog = dialog;
+    req->sess = sess;
+
+    pthread_t th;
+    if (pthread_create(&th, NULL, uc_resolve_thread, req) == 0) {
+        pthread_detach(th);
+    } else {
+        free(req);
+        show_toast("Errore creazione thread Undetected ChromeDriver");
+        if (sess) auto_session_next(sess);
+    }
+}
+
+static void on_dlps_uc_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    DlpsActionData *d = (DlpsActionData *)user_data;
+    trigger_uc_resolve(d->url, d->game_title, d->password, d->dialog, NULL);
     free(d);
 }
 
@@ -5000,6 +5770,10 @@ static gboolean dlps_dispatch_link(const char *url, const char *title,
     if (!url || strncmp(url, "http", 4) != 0) return FALSE;
 
     if (url_is_protected(url)) {
+        if (g_uc_enabled && is_uc_resolver_available()) {
+            trigger_uc_resolve(url, title, pass, NULL, sess);
+            return TRUE;
+        }
         if (!from_clipboard && !sess)
             show_toast("Link protetto: completa la verifica nel browser, poi copia il link finale.");
         return FALSE;
@@ -5021,6 +5795,11 @@ static gboolean dlps_dispatch_link(const char *url, const char *title,
 
     if (g_realdebrid_token[0]) {
         trigger_realdebrid_resolve(url, title, pass, NULL, sess);
+        return TRUE;
+    }
+
+    if (g_uc_enabled && is_uc_resolver_available()) {
+        trigger_uc_resolve(url, title, pass, NULL, sess);
         return TRUE;
     }
 
@@ -5125,7 +5904,13 @@ static void auto_session_next(AutoSession *sess) {
     if (!sess) return;
     while (sess->idx < sess->n) {
         const DlpsLink *l = &sess->links[sess->idx++];
-        if (link_auto_rank(l) > 2) continue;   /* needs a human: handled as last resort */
+        if (link_auto_rank(l) > 2) {
+            if (g_uc_enabled && is_uc_resolver_available()) {
+                trigger_uc_resolve(l->url, sess->title, sess->pass, NULL, sess);
+                return;
+            }
+            continue;   /* needs a human: handled as last resort */
+        }
         if (dlps_dispatch_link(l->url, sess->title, sess->pass, FALSE, sess))
             return;                            /* session now owned by the started action */
     }
@@ -5139,7 +5924,11 @@ static void auto_session_next(AutoSession *sess) {
     if (manual) {
         clip_watch_arm(sess->title, sess->pass);
         g_app_info_launch_default_for_uri(manual, NULL, NULL);
-        show_toast("Serve una verifica manuale: completala nel browser e copia il link finale, il download parte da solo.");
+        if (g_uc_enabled && is_uc_resolver_available()) {
+            show_toast("Risoluzione automatica non riuscita: sblocca nel browser e copia il link finale.");
+        } else {
+            show_toast("Serve una verifica manuale: completala nel browser e copia il link finale, il download parte da solo.");
+        }
     } else {
         show_toast("Nessun link scaricabile automaticamente per questo gioco.");
     }
@@ -5235,7 +6024,12 @@ static void on_start_direct_dl_clicked(GtkButton *btn, gpointer user_data) {
     g_strstrip(url);
 
     if (strstr(url, "downloadgameps3.net") || strstr(url, "dlpsgame.com") || strstr(url, "filecrypt.cc")) {
-        show_toast("Attenzione: questo è un link protetto! Aprilo nel browser e incolla il link diretto finale.");
+        if (g_uc_enabled && is_uc_resolver_available()) {
+            trigger_uc_resolve(url, data->game_title[0] ? data->game_title : "Game", data->password, data->dialog, NULL);
+            free(data);
+            return;
+        }
+        show_toast("Attenzione: link protetto! Abilita Undetected ChromeDriver o sbloccalo nel browser.");
         return;
     }
 
@@ -5310,6 +6104,11 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
         gtk_widget_add_css_class(b_cusa, "badge-cusa");
         gtk_box_append(GTK_BOX(badges_row), b_cusa);
     }
+    if (game->region[0]) {
+        GtkWidget *b_reg = gtk_label_new(game->region);
+        gtk_widget_add_css_class(b_reg, "badge-region");
+        gtk_box_append(GTK_BOX(badges_row), b_reg);
+    }
     if (game->year[0]) {
         GtkWidget *b_year = gtk_label_new(game->year);
         gtk_widget_add_css_class(b_year, "badge-year");
@@ -5328,7 +6127,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
         gtk_widget_add_css_class(pwd_box, "password-box");
 
         char ptext[256];
-        snprintf(ptext, sizeof(ptext), "🔑 Password Archivio: %s", game->password);
+        snprintf(ptext, sizeof(ptext), "Password Archivio: %s", game->password);
         GtkWidget *lbl_pwd = gtk_label_new(ptext);
         gtk_label_set_xalign(GTK_LABEL(lbl_pwd), 0.0);
         gtk_widget_set_hexpand(lbl_pwd, TRUE);
@@ -5343,7 +6142,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     }
 
     if (game->n_links > 0) {
-        GtkWidget *btn_auto = gtk_button_new_with_label("⚡ Scarica Automatico su PS");
+        GtkWidget *btn_auto = gtk_button_new_with_label("Scarica Automatico su PS");
         gtk_widget_add_css_class(btn_auto, "btn-primary");
         gtk_widget_set_halign(btn_auto, GTK_ALIGN_START);
         g_signal_connect(btn_auto, "clicked", G_CALLBACK(on_dlps_auto_clicked), (gpointer)game);
@@ -5358,7 +6157,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     }
 
     if (game->post_url[0]) {
-        GtkWidget *btn_post = gtk_button_new_with_label("🌐 Apri Pagina su DLPSGame");
+        GtkWidget *btn_post = gtk_button_new_with_label("Apri Pagina Web");
         gtk_widget_add_css_class(btn_post, "btn-browser");
         gtk_widget_set_halign(btn_post, GTK_ALIGN_START);
         g_signal_connect(btn_post, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->post_url);
@@ -5398,13 +6197,13 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
         GtkWidget *lbl_badge = gtk_label_new("");
         if (game->links[i].type == DLPS_LINK_DIRECT_PKG) {
-            gtk_label_set_text(GTK_LABEL(lbl_badge), "⚡ DIRETTO");
+            gtk_label_set_text(GTK_LABEL(lbl_badge), "DIRETTO");
             gtk_widget_add_css_class(lbl_badge, "badge-direct");
         } else if (game->links[i].type == DLPS_LINK_MEDIAFIRE) {
             gtk_label_set_text(GTK_LABEL(lbl_badge), "MEDIAFIRE");
             gtk_widget_add_css_class(lbl_badge, "badge-year");
         } else if (game->links[i].type == DLPS_LINK_PROTECTOR) {
-            gtk_label_set_text(GTK_LABEL(lbl_badge), "🔒 PROTETTO");
+            gtk_label_set_text(GTK_LABEL(lbl_badge), "PROTETTO");
             gtk_widget_add_css_class(lbl_badge, "badge-protector");
         } else {
             gtk_label_set_text(GTK_LABEL(lbl_badge), "HOSTER");
@@ -5427,7 +6226,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             strncpy(pfd->password, game->password, sizeof(pfd->password) - 1);
             pfd->dialog = dialog;
 
-            GtkWidget *btn_dl = gtk_button_new_with_label("⬇ Scarica .PKG");
+            GtkWidget *btn_dl = gtk_button_new_with_label("Scarica .PKG");
             gtk_widget_add_css_class(btn_dl, "btn-prefill");
             g_signal_connect(btn_dl, "clicked", G_CALLBACK(on_prefill_download_clicked), pfd);
             gtk_box_append(GTK_BOX(row), btn_dl);
@@ -5438,12 +6237,12 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             strncpy(mfd->password, game->password, sizeof(mfd->password) - 1);
             mfd->dialog = dialog;
 
-            GtkWidget *btn_mf = gtk_button_new_with_label("⚡ Risolvi & Scarica");
+            GtkWidget *btn_mf = gtk_button_new_with_label("Risolvi e Scarica");
             gtk_widget_add_css_class(btn_mf, "btn-resolve");
             g_signal_connect(btn_mf, "clicked", G_CALLBACK(on_dlps_mediafire_clicked), mfd);
             gtk_box_append(GTK_BOX(row), btn_mf);
 
-            GtkWidget *btn_wb = gtk_button_new_with_label("Browser ↗");
+            GtkWidget *btn_wb = gtk_button_new_with_label("Apri nel Browser");
             gtk_widget_add_css_class(btn_wb, "btn-browser");
             g_signal_connect(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->links[i].url);
             gtk_box_append(GTK_BOX(row), btn_wb);
@@ -5456,13 +6255,27 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
                 strncpy(rdd->password, game->password, sizeof(rdd->password) - 1);
                 rdd->dialog = dialog;
 
-                GtkWidget *btn_rd = gtk_button_new_with_label("⚡ Debrid 1-Click");
+                GtkWidget *btn_rd = gtk_button_new_with_label("Debrid 1-Click");
                 gtk_widget_add_css_class(btn_rd, "btn-debrid");
                 g_signal_connect(btn_rd, "clicked", G_CALLBACK(on_dlps_realdebrid_clicked), rdd);
                 gtk_box_append(GTK_BOX(row), btn_rd);
             }
 
-            const char *btn_lbl = (game->links[i].type == DLPS_LINK_PROTECTOR) ? "Sblocca nel Browser ↗" : "Apri Pagina ↗";
+            if (is_uc_resolver_available() && (game->links[i].type == DLPS_LINK_PROTECTOR || game->links[i].type == DLPS_LINK_HOSTER)) {
+                DlpsActionData *ucd = malloc(sizeof(DlpsActionData));
+                strncpy(ucd->url, game->links[i].url, sizeof(ucd->url) - 1);
+                strncpy(ucd->game_title, game->title, sizeof(ucd->game_title) - 1);
+                strncpy(ucd->password, game->password, sizeof(ucd->password) - 1);
+                ucd->dialog = dialog;
+                ucd->sess = NULL;
+
+                GtkWidget *btn_uc = gtk_button_new_with_label("Sblocca con UC");
+                gtk_widget_add_css_class(btn_uc, "btn-uc");
+                g_signal_connect(btn_uc, "clicked", G_CALLBACK(on_dlps_uc_clicked), ucd);
+                gtk_box_append(GTK_BOX(row), btn_uc);
+            }
+
+            const char *btn_lbl = (game->links[i].type == DLPS_LINK_PROTECTOR) ? "Sblocca nel Browser" : "Apri Pagina";
             GtkWidget *btn_wb = gtk_button_new_with_label(btn_lbl);
             gtk_widget_add_css_class(btn_wb, "btn-browser");
             g_signal_connect(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->links[i].url);
@@ -5484,7 +6297,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     GtkWidget *box_direct = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_widget_add_css_class(box_direct, "direct-dl-box");
 
-    GtkWidget *lbl_dd_title = gtk_label_new("📥 Avvia Download Diretto .PKG verso PlayStation");
+    GtkWidget *lbl_dd_title = gtk_label_new("Avvia Download Diretto .PKG verso PlayStation");
     gtk_label_set_xalign(GTK_LABEL(lbl_dd_title), 0.0);
     gtk_widget_add_css_class(lbl_dd_title, "form-label");
     gtk_box_append(GTK_BOX(box_direct), lbl_dd_title);
@@ -5504,7 +6317,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     g_object_set(entry_direct, "placeholder-text", "https://.../titolo-gioco.pkg", NULL);
     gtk_box_append(GTK_BOX(row_input), entry_direct);
 
-    GtkWidget *btn_paste = gtk_button_new_with_label("📋 Incolla da Appunti");
+    GtkWidget *btn_paste = gtk_button_new_with_label("Incolla da Appunti");
     gtk_widget_add_css_class(btn_paste, "btn-copy-link");
     g_signal_connect(btn_paste, "clicked", G_CALLBACK(on_paste_clipboard_to_entry), entry_direct);
     gtk_box_append(GTK_BOX(row_input), btn_paste);
@@ -5515,7 +6328,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     strncpy(ddd->password, game->password, sizeof(ddd->password) - 1);
     ddd->dialog = dialog;
 
-    GtkWidget *btn_start_ps = gtk_button_new_with_label("🚀 Avvia su PS ➔");
+    GtkWidget *btn_start_ps = gtk_button_new_with_label("Avvia su PS");
     gtk_widget_add_css_class(btn_start_ps, "btn-primary");
     g_signal_connect(btn_start_ps, "clicked", G_CALLBACK(on_start_direct_dl_clicked), ddd);
     gtk_box_append(GTK_BOX(row_input), btn_start_ps);
@@ -5561,8 +6374,12 @@ static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list
     gtk_box_append(GTK_BOX(info_col), lbl_title);
 
     GtkWidget *badges_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *lbl_platform = gtk_label_new("");
+    gtk_widget_add_css_class(lbl_platform, "badge-platform");
     GtkWidget *lbl_cusa = gtk_label_new("");
     gtk_widget_add_css_class(lbl_cusa, "badge-cusa");
+    GtkWidget *lbl_reg = gtk_label_new("");
+    gtk_widget_add_css_class(lbl_reg, "badge-region");
     GtkWidget *lbl_year = gtk_label_new("");
     gtk_widget_add_css_class(lbl_year, "badge-year");
     GtkWidget *lbl_genre = gtk_label_new("");
@@ -5570,7 +6387,9 @@ static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list
     GtkWidget *lbl_pass = gtk_label_new("");
     gtk_widget_add_css_class(lbl_pass, "badge-pass");
 
+    gtk_box_append(GTK_BOX(badges_row), lbl_platform);
     gtk_box_append(GTK_BOX(badges_row), lbl_cusa);
+    gtk_box_append(GTK_BOX(badges_row), lbl_reg);
     gtk_box_append(GTK_BOX(badges_row), lbl_year);
     gtk_box_append(GTK_BOX(badges_row), lbl_genre);
     gtk_box_append(GTK_BOX(badges_row), lbl_pass);
@@ -5583,14 +6402,16 @@ static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list
 
     gtk_box_append(GTK_BOX(card), info_col);
 
-    GtkWidget *btn = gtk_button_new_with_label("Dettagli & Link ➔");
+    GtkWidget *btn = gtk_button_new_with_label("Dettagli e Link");
     gtk_widget_add_css_class(btn, "btn-install");
     gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
     gtk_box_append(GTK_BOX(card), btn);
 
     g_object_set_data(G_OBJECT(card), "img", img);
     g_object_set_data(G_OBJECT(card), "title", lbl_title);
+    g_object_set_data(G_OBJECT(card), "platform", lbl_platform);
     g_object_set_data(G_OBJECT(card), "cusa", lbl_cusa);
+    g_object_set_data(G_OBJECT(card), "reg", lbl_reg);
     g_object_set_data(G_OBJECT(card), "year", lbl_year);
     g_object_set_data(G_OBJECT(card), "genre", lbl_genre);
     g_object_set_data(G_OBJECT(card), "pass", lbl_pass);
@@ -5608,7 +6429,9 @@ static void on_dlps_item_bind(GtkSignalListItemFactory *self, GtkListItem *list_
 
     GtkWidget *img = g_object_get_data(G_OBJECT(card), "img");
     GtkWidget *lbl_title = g_object_get_data(G_OBJECT(card), "title");
+    GtkWidget *lbl_platform = g_object_get_data(G_OBJECT(card), "platform");
     GtkWidget *lbl_cusa = g_object_get_data(G_OBJECT(card), "cusa");
+    GtkWidget *lbl_reg = g_object_get_data(G_OBJECT(card), "reg");
     GtkWidget *lbl_year = g_object_get_data(G_OBJECT(card), "year");
     GtkWidget *lbl_genre = g_object_get_data(G_OBJECT(card), "genre");
     GtkWidget *lbl_pass = g_object_get_data(G_OBJECT(card), "pass");
@@ -5617,11 +6440,29 @@ static void on_dlps_item_bind(GtkSignalListItemFactory *self, GtkListItem *list_
 
     gtk_label_set_text(GTK_LABEL(lbl_title), obj->game->title);
 
+    if (lbl_platform) {
+        if (obj->game->platform[0]) {
+            gtk_label_set_text(GTK_LABEL(lbl_platform), obj->game->platform);
+            gtk_widget_set_visible(lbl_platform, TRUE);
+        } else {
+            gtk_widget_set_visible(lbl_platform, FALSE);
+        }
+    }
+
     if (obj->game->cusa[0]) {
         gtk_label_set_text(GTK_LABEL(lbl_cusa), obj->game->cusa);
         gtk_widget_set_visible(lbl_cusa, TRUE);
     } else {
         gtk_widget_set_visible(lbl_cusa, FALSE);
+    }
+
+    if (lbl_reg) {
+        if (obj->game->region[0]) {
+            gtk_label_set_text(GTK_LABEL(lbl_reg), obj->game->region);
+            gtk_widget_set_visible(lbl_reg, TRUE);
+        } else {
+            gtk_widget_set_visible(lbl_reg, FALSE);
+        }
     }
 
     if (obj->game->year[0]) {
@@ -5640,7 +6481,7 @@ static void on_dlps_item_bind(GtkSignalListItemFactory *self, GtkListItem *list_
 
     if (obj->game->password[0]) {
         char pbuf[160];
-        snprintf(pbuf, sizeof(pbuf), "🔑 %s", obj->game->password);
+        snprintf(pbuf, sizeof(pbuf), "Password: %s", obj->game->password);
         gtk_label_set_text(GTK_LABEL(lbl_pass), pbuf);
         gtk_widget_set_visible(lbl_pass, TRUE);
     } else {
@@ -5665,9 +6506,51 @@ static void on_dlps_item_bind(GtkSignalListItemFactory *self, GtkListItem *list_
     g_signal_connect(btn, "clicked", G_CALLBACK(on_dlps_card_details_clicked), obj);
 }
 
-/* DLPS Toolbar Callbacks */
+static void on_dlps_console_changed(GObject *gobject, GParamSpec *pspec, gpointer user_data) {
+    (void)gobject; (void)pspec; (void)user_data;
+    if (!g_dlps_console_dropdown || !g_dlps_store) return;
+    guint sel = gtk_drop_down_get_selected(GTK_DROP_DOWN(g_dlps_console_dropdown));
+    if ((int)sel == g_dlps_console_filter) return;
+    g_dlps_console_filter = (int)sel;
+    const char *q = g_dlps_search_entry ? gtk_editable_get_text(GTK_EDITABLE(g_dlps_search_entry)) : "";
+    trigger_dlps_fetch(q, 1);
+}
+
+static void on_dlps_region_changed(GObject *gobject, GParamSpec *pspec, gpointer user_data) {
+    (void)gobject; (void)pspec; (void)user_data;
+    if (!g_dlps_region_dropdown || !g_dlps_store) return;
+    guint sel = gtk_drop_down_get_selected(GTK_DROP_DOWN(g_dlps_region_dropdown));
+    if ((int)sel == g_dlps_region_filter) return;
+    g_dlps_region_filter = (int)sel;
+    const char *q = g_dlps_search_entry ? gtk_editable_get_text(GTK_EDITABLE(g_dlps_search_entry)) : "";
+    trigger_dlps_fetch(q, 1);
+}
+
+static guint g_dlps_search_timer_id = 0;
+
+static gboolean on_dlps_search_debounced_cb(gpointer user_data) {
+    (void)user_data;
+    g_dlps_search_timer_id = 0;
+    const char *q = g_dlps_search_entry ? gtk_editable_get_text(GTK_EDITABLE(g_dlps_search_entry)) : "";
+    trigger_dlps_fetch(q, 1);
+    return G_SOURCE_REMOVE;
+}
+
+static void on_dlps_search_changed(GtkSearchEntry *entry, gpointer user_data) {
+    (void)entry; (void)user_data;
+    if (g_dlps_search_timer_id > 0) {
+        g_source_remove(g_dlps_search_timer_id);
+        g_dlps_search_timer_id = 0;
+    }
+    g_dlps_search_timer_id = g_timeout_add(500, on_dlps_search_debounced_cb, NULL);
+}
+
 static void on_dlps_search_activated(GtkSearchEntry *entry, gpointer user_data) {
     (void)user_data;
+    if (g_dlps_search_timer_id > 0) {
+        g_source_remove(g_dlps_search_timer_id);
+        g_dlps_search_timer_id = 0;
+    }
     const char *q = gtk_editable_get_text(GTK_EDITABLE(entry));
     trigger_dlps_fetch(q, 1);
 }
@@ -5692,6 +6575,10 @@ static void on_dlps_refresh_clicked(GtkButton *btn, gpointer user_data) {
 }
 
 static GtkWidget *build_dlpsgame_page(void) {
+    if (!g_dlps_store) {
+        g_dlps_store = g_list_store_new(TYPE_DLPS_GAME_OBJECT);
+    }
+
     GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
     gtk_widget_add_css_class(box, "dlps-page");
     gtk_widget_set_margin_start(box, 16);
@@ -5704,21 +6591,44 @@ static GtkWidget *build_dlpsgame_page(void) {
     GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_widget_add_css_class(toolbar, "dlps-toolbar");
 
-    GtkWidget *btn_back = gtk_button_new_with_label("← Torna ai Download");
+    GtkWidget *btn_back = gtk_button_new_with_label("Torna ai Download");
     gtk_widget_add_css_class(btn_back, "btn-nav");
     g_signal_connect(btn_back, "clicked", G_CALLBACK(on_back_to_downloads_clicked), NULL);
 
     g_dlps_search_entry = gtk_search_entry_new();
     gtk_widget_add_css_class(g_dlps_search_entry, "dlps-search");
     gtk_widget_set_hexpand(g_dlps_search_entry, TRUE);
-    g_object_set(g_dlps_search_entry, "placeholder-text", "Cerca tra 6.500+ giochi PS4...", NULL);
+    g_object_set(g_dlps_search_entry, "placeholder-text", "Cerca giochi e app (PS5, PS4, ecc.)...", NULL);
     g_signal_connect(g_dlps_search_entry, "activate", G_CALLBACK(on_dlps_search_activated), NULL);
-    g_signal_connect(g_dlps_search_entry, "search-changed", G_CALLBACK(on_dlps_search_activated), NULL);
+    g_signal_connect(g_dlps_search_entry, "search-changed", G_CALLBACK(on_dlps_search_changed), NULL);
+
+    GtkStringList *dlps_consoles = gtk_string_list_new(NULL);
+    gtk_string_list_append(dlps_consoles, "Tutte le Console");
+    gtk_string_list_append(dlps_consoles, "PlayStation 5 (PS5)");
+    gtk_string_list_append(dlps_consoles, "PlayStation 4 (PS4)");
+    gtk_string_list_append(dlps_consoles, "PlayStation 3 (PS3)");
+    gtk_string_list_append(dlps_consoles, "PlayStation 2 (PS2)");
+
+    g_dlps_console_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_consoles), NULL);
+    gtk_widget_add_css_class(g_dlps_console_dropdown, "catalog-dropdown");
+    g_object_unref(dlps_consoles);
+    g_signal_connect(g_dlps_console_dropdown, "notify::selected", G_CALLBACK(on_dlps_console_changed), NULL);
+
+    GtkStringList *dlps_regions = gtk_string_list_new(NULL);
+    gtk_string_list_append(dlps_regions, "Tutte le Regioni");
+    gtk_string_list_append(dlps_regions, "Europa (EUR)");
+    gtk_string_list_append(dlps_regions, "America (USA)");
+    gtk_string_list_append(dlps_regions, "Giappone / Asia");
+
+    g_dlps_region_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_regions), NULL);
+    gtk_widget_add_css_class(g_dlps_region_dropdown, "catalog-dropdown");
+    g_object_unref(dlps_regions);
+    g_signal_connect(g_dlps_region_dropdown, "notify::selected", G_CALLBACK(on_dlps_region_changed), NULL);
 
     g_dlps_spinner = gtk_spinner_new();
     gtk_widget_set_valign(g_dlps_spinner, GTK_ALIGN_CENTER);
 
-    g_dlps_btn_prev = gtk_button_new_with_label("◀ Prec.");
+    g_dlps_btn_prev = gtk_button_new_with_label("Precedente");
     gtk_widget_add_css_class(g_dlps_btn_prev, "btn-page");
     gtk_widget_set_sensitive(g_dlps_btn_prev, FALSE);
     g_signal_connect(g_dlps_btn_prev, "clicked", G_CALLBACK(on_dlps_prev_clicked), NULL);
@@ -5726,18 +6636,20 @@ static GtkWidget *build_dlpsgame_page(void) {
     g_dlps_lbl_page = gtk_label_new("Pronto");
     gtk_widget_add_css_class(g_dlps_lbl_page, "dlps-page-label");
 
-    g_dlps_btn_next = gtk_button_new_with_label("Succ. ▶");
+    g_dlps_btn_next = gtk_button_new_with_label("Successivo");
     gtk_widget_add_css_class(g_dlps_btn_next, "btn-page");
     gtk_widget_set_sensitive(g_dlps_btn_next, FALSE);
     g_signal_connect(g_dlps_btn_next, "clicked", G_CALLBACK(on_dlps_next_clicked), NULL);
 
-    GtkWidget *btn_refresh = gtk_button_new_with_label("↻");
+    GtkWidget *btn_refresh = gtk_button_new_with_label("Aggiorna");
     gtk_widget_add_css_class(btn_refresh, "btn-page");
     gtk_widget_set_tooltip_text(btn_refresh, "Aggiorna elenco");
     g_signal_connect(btn_refresh, "clicked", G_CALLBACK(on_dlps_refresh_clicked), NULL);
 
     gtk_box_append(GTK_BOX(toolbar), btn_back);
     gtk_box_append(GTK_BOX(toolbar), g_dlps_search_entry);
+    gtk_box_append(GTK_BOX(toolbar), g_dlps_console_dropdown);
+    gtk_box_append(GTK_BOX(toolbar), g_dlps_region_dropdown);
     gtk_box_append(GTK_BOX(toolbar), g_dlps_spinner);
     gtk_box_append(GTK_BOX(toolbar), g_dlps_btn_prev);
     gtk_box_append(GTK_BOX(toolbar), g_dlps_lbl_page);
@@ -5747,7 +6659,6 @@ static GtkWidget *build_dlpsgame_page(void) {
     gtk_box_append(GTK_BOX(box), toolbar);
 
     /* ListView Model */
-    g_dlps_store = g_list_store_new(TYPE_DLPS_GAME_OBJECT);
     GtkNoSelection *sel = gtk_no_selection_new(G_LIST_MODEL(g_dlps_store));
 
     GtkSignalListItemFactory *factory = GTK_SIGNAL_LIST_ITEM_FACTORY(gtk_signal_list_item_factory_new());
@@ -5769,7 +6680,8 @@ static void on_dlps_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn; (void)user_data;
     if (g_stack) {
         gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "dlpsgame");
-        if (g_dlps_total_items == 0 && !g_dlps_is_loading) {
+        guint n_items = g_dlps_store ? g_list_model_get_n_items(G_LIST_MODEL(g_dlps_store)) : 0;
+        if (n_items == 0 && !g_dlps_is_loading) {
             trigger_dlps_fetch("", 1);
         }
     }
@@ -5784,9 +6696,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     load_css();
     load_settings();
     trigger_ftp_ensure_dir_async();
-    if (g_n_sources > 0) {
-        trigger_catalog_fetch_async();
-    }
+    trigger_catalog_fetch_async();
 
     g_window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(g_window), "PS FTP Downloader");
@@ -5850,7 +6760,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     GtkWidget *spacer = gtk_label_new("");
     gtk_widget_set_hexpand(spacer, TRUE);
 
-    GtkWidget *btn_dlps = gtk_button_new_with_label("🎮 Giochi PS4");
+    GtkWidget *btn_dlps = gtk_button_new_with_label("Sfoglia Giochi");
     gtk_widget_add_css_class(btn_dlps, "btn-dlps");
     gtk_widget_set_valign(btn_dlps, GTK_ALIGN_CENTER);
     g_signal_connect(btn_dlps, "clicked", G_CALLBACK(on_dlps_clicked), NULL);
@@ -5860,7 +6770,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_valign(btn_sources, GTK_ALIGN_CENTER);
     g_signal_connect(btn_sources, "clicked", G_CALLBACK(on_sources_clicked), g_window);
 
-    GtkWidget *btn_catalog = gtk_button_new_with_label("Catalogo");
+    GtkWidget *btn_catalog = gtk_button_new_with_label("Tools");
     gtk_widget_add_css_class(btn_catalog, "btn-nav");
     gtk_widget_set_valign(btn_catalog, GTK_ALIGN_CENTER);
     g_signal_connect(btn_catalog, "clicked", G_CALLBACK(on_catalog_clicked), NULL);
@@ -5902,10 +6812,11 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_halign(empty_box, GTK_ALIGN_CENTER);
     gtk_widget_set_valign(empty_box, GTK_ALIGN_CENTER);
 
-    GtkWidget *e_icon  = gtk_label_new("📡");
-    GtkWidget *e_title = gtk_label_new("No active transfers");
+    GtkWidget *e_icon  = gtk_image_new_from_icon_name("folder-download-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(e_icon), 48);
+    GtkWidget *e_title = gtk_label_new("Nessun trasferimento attivo");
     GtkWidget *e_sub   = gtk_label_new(
-        "Click 'New Download' to start a direct\nnetwork-to-PS stream, or browse the 'Catalogo'");
+        "Avvia un nuovo download o sfoglia le sezioni 'Sfoglia Giochi' e 'Tools'");
     gtk_widget_add_css_class(e_icon,  "empty-icon");
     gtk_widget_add_css_class(e_title, "empty-title");
     gtk_widget_add_css_class(e_sub,   "empty-sub");
@@ -5944,10 +6855,22 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_hexpand(g_lbl_stats, TRUE);
     gtk_box_append(GTK_BOX(statusbar), g_lbl_stats);
 
+    g_toast_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(g_toast_box, "toast-box");
+    gtk_widget_set_visible(g_toast_box, FALSE);
+
     g_toast_label = gtk_label_new("");
     gtk_widget_add_css_class(g_toast_label, "toast-label");
-    gtk_widget_set_visible(g_toast_label, FALSE);
-    gtk_box_append(GTK_BOX(statusbar), g_toast_label);
+    gtk_box_append(GTK_BOX(g_toast_box), g_toast_label);
+
+    g_toast_progress = gtk_progress_bar_new();
+    gtk_widget_add_css_class(g_toast_progress, "toast-progress");
+    gtk_widget_set_size_request(g_toast_progress, 150, 6);
+    gtk_widget_set_valign(g_toast_progress, GTK_ALIGN_CENTER);
+    gtk_widget_set_visible(g_toast_progress, FALSE);
+    gtk_box_append(GTK_BOX(g_toast_box), g_toast_progress);
+
+    gtk_box_append(GTK_BOX(statusbar), g_toast_box);
 
     /* ── Assemble root ── */
     gtk_box_append(GTK_BOX(root), header);

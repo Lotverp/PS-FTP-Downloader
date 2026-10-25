@@ -3,7 +3,7 @@ TARGET  = ps-ftp-downloader
 SRC     = main.c
 
 PKG_DEPS   = gtk4 libcurl json-glib-1.0 gdk-pixbuf-2.0
-VERSION    = 1.3.4
+VERSION    = 1.3.5
 ARCH       = amd64
 
 CFLAGS  = $(shell pkg-config --cflags $(PKG_DEPS)) -Wall -Wextra -O2 -g
@@ -32,6 +32,8 @@ run: all
 install: all
 	install -Dm755 $(TARGET)                    $(DESTDIR)$(BINDIR)/$(TARGET)
 	install -Dm644 style.css                    $(DESTDIR)$(DATADIR)/style.css
+	install -Dm755 uc_resolver.py               $(DESTDIR)$(DATADIR)/uc_resolver.py
+	install -Dm755 setup-bot-resolver.sh        $(DESTDIR)$(DATADIR)/setup-bot-resolver.sh
 	install -Dm644 ps-ftp-downloader.desktop    $(DESTDIR)$(APPDIR)/ps-ftp-downloader.desktop
 	if [ -f "ps-ftp-downloader.png" ]; then \
 	    install -Dm644 ps-ftp-downloader.png    $(DESTDIR)$(PIXMAPSDIR)/ps-ftp-downloader.png; \
