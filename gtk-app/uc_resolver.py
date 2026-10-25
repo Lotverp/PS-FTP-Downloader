@@ -334,6 +334,12 @@ def extract_direct_download_from_hoster(driver, timeout=15):
 
             # Vikingfile
             if "vikingfile" in curr_url or "vik1ngfile" in curr_url:
+                try:
+                    dl_href = driver.execute_script("return document.getElementById('download-link')?.href || '';")
+                    if dl_href and ("/d/" in dl_href or "http" in dl_href):
+                        return dl_href
+                except Exception:
+                    pass
                 v_links = driver.find_elements(By.CSS_SELECTOR, "a")
                 for l in v_links:
                     href = l.get_attribute("href") or ""
@@ -343,6 +349,8 @@ def extract_direct_download_from_hoster(driver, timeout=15):
 
             # Mediafire
             if "mediafire.com" in curr_url:
+                if "error.php" in curr_url:
+                    return None
                 mf_btns = driver.find_elements(By.CSS_SELECTOR, "#downloadButton, a.input, a.download_link")
                 for btn in mf_btns:
                     href = btn.get_attribute("href") or ""
