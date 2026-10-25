@@ -45,7 +45,7 @@ Compatible with any PS FTP server: **GoldHen (PS4)**, **ps4-hen**, **ps3-hen**, 
 Check the **[Releases](../../releases)** tab for the pre-compiled `.deb` package.
 
 ```bash
-sudo apt install ./ps-ftp-downloader_1.3.3_amd64.deb
+sudo apt install ./ps-ftp-downloader_1.3.4_amd64.deb
 ```
 
 Then launch from your application menu or terminal:
@@ -71,7 +71,7 @@ make
 ```bash
 cd PS-FTP-Downloader/gtk-app
 ./build-deb.sh
-sudo apt install ../ps-ftp-downloader_1.3.3_amd64.deb
+sudo apt install ../ps-ftp-downloader_1.3.4_amd64.deb
 ```
 
 ---

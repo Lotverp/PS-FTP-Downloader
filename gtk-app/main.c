@@ -39,7 +39,7 @@
  * ═══════════════════════════════════════════════════════════ */
 
 #define APP_ID           "io.psftpdownloader.app"
-#define APP_VERSION      "1.3.3"
+#define APP_VERSION      "1.3.4"
 #define APP_GITHUB_URL   "https://github.com/Lotverp/PS-FTP-Downloader"
 
 #define FTP_HOST_DEFAULT "192.168.1.195"
@@ -4700,11 +4700,17 @@ typedef struct {
     GtkWidget *dialog;
 } DlpsPreFillData;
 
+/* Auto-download session: ordered candidate links, tried one after the other */
+typedef struct AutoSession AutoSession;
+static void auto_session_next(AutoSession *sess);
+static void auto_session_free(AutoSession *sess);
+
 typedef struct {
     char url[2048];
     char game_title[256];
     char password[128];
     GtkWidget *dialog;
+    AutoSession *sess;
 } DlpsActionData;
 
 static void on_copy_str_clicked(GtkButton *btn, gpointer user_data) {
@@ -4741,6 +4747,7 @@ typedef struct {
     char game_title[256];
     char password[128];
     GtkWidget *dialog;
+    AutoSession *sess;
 } MediafireRes;
 
 static gboolean on_mediafire_resolved_idle(gpointer user_data) {
@@ -4753,6 +4760,10 @@ static gboolean on_mediafire_resolved_idle(gpointer user_data) {
         snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
         show_toast("Link Mediafire risolto: download avviato verso la PS!");
         start_single_download(res->direct_url, dest_name, res->password);
+        auto_session_free(res->sess);
+    } else if (res->sess) {
+        show_toast("Mediafire non disponibile: provo il link successivo...");
+        auto_session_next(res->sess);
     } else {
         show_toast("Impossibile risolvere il link Mediafire (file rimosso da DMCA o non disponibile).");
     }
@@ -4766,6 +4777,7 @@ static void *mediafire_resolve_thread(void *arg) {
     strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
     strncpy(res->password, req->password, sizeof(res->password) - 1);
     res->dialog = req->dialog;
+    res->sess = req->sess;
 
     CURL *c = curl_easy_init();
     if (c) {
@@ -4807,13 +4819,14 @@ static void *mediafire_resolve_thread(void *arg) {
     return NULL;
 }
 
-static void trigger_mediafire_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog) {
+static void trigger_mediafire_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess) {
     show_toast("Risoluzione link diretto Mediafire...");
     DlpsActionData *req = calloc(1, sizeof(DlpsActionData));
     strncpy(req->url, url, sizeof(req->url) - 1);
     strncpy(req->game_title, game_title, sizeof(req->game_title) - 1);
     strncpy(req->password, password, sizeof(req->password) - 1);
     req->dialog = dialog;
+    req->sess = sess;
 
     pthread_t th;
     if (pthread_create(&th, NULL, mediafire_resolve_thread, req) == 0) {
@@ -4821,13 +4834,14 @@ static void trigger_mediafire_resolve(const char *url, const char *game_title, c
     } else {
         free(req);
         show_toast("Errore creazione thread risolutore");
+        if (sess) auto_session_next(sess);
     }
 }
 
 static void on_dlps_mediafire_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     DlpsActionData *d = (DlpsActionData *)user_data;
-    trigger_mediafire_resolve(d->url, d->game_title, d->password, d->dialog);
+    trigger_mediafire_resolve(d->url, d->game_title, d->password, d->dialog, NULL);
     free(d);
 }
 
@@ -4839,6 +4853,7 @@ typedef struct {
     char password[128];
     char error_msg[256];
     GtkWidget *dialog;
+    AutoSession *sess;
 } RealDebridRes;
 
 static gboolean on_realdebrid_resolved_idle(gpointer user_data) {
@@ -4851,6 +4866,10 @@ static gboolean on_realdebrid_resolved_idle(gpointer user_data) {
         snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
         start_single_download(res->download_url, dest_name, res->password);
         show_toast("Link sbloccato con Real-Debrid: download avviato!");
+        auto_session_free(res->sess);
+    } else if (res->sess) {
+        show_toast("Real-Debrid non ha sbloccato il link: provo il successivo...");
+        auto_session_next(res->sess);
     } else {
         char buf[300];
         snprintf(buf, sizeof(buf), "Errore Real-Debrid: %s", res->error_msg[0] ? res->error_msg : "Sblocco fallito");
@@ -4866,6 +4885,7 @@ static void *realdebrid_resolve_thread(void *arg) {
     strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
     strncpy(res->password, req->password, sizeof(res->password) - 1);
     res->dialog = req->dialog;
+    res->sess = req->sess;
 
     CURL *c = curl_easy_init();
     if (c) {
@@ -4929,13 +4949,14 @@ static void *realdebrid_resolve_thread(void *arg) {
     return NULL;
 }
 
-static void trigger_realdebrid_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog) {
+static void trigger_realdebrid_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess) {
     show_toast("Sblocco link tramite Real-Debrid...");
     DlpsActionData *req = calloc(1, sizeof(DlpsActionData));
     strncpy(req->url, url, sizeof(req->url) - 1);
     strncpy(req->game_title, game_title, sizeof(req->game_title) - 1);
     strncpy(req->password, password, sizeof(req->password) - 1);
     req->dialog = dialog;
+    req->sess = sess;
 
     pthread_t th;
     if (pthread_create(&th, NULL, realdebrid_resolve_thread, req) == 0) {
@@ -4943,13 +4964,14 @@ static void trigger_realdebrid_resolve(const char *url, const char *game_title, 
     } else {
         free(req);
         show_toast("Errore avvio thread Real-Debrid");
+        if (sess) auto_session_next(sess);
     }
 }
 
 static void on_dlps_realdebrid_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     DlpsActionData *d = (DlpsActionData *)user_data;
-    trigger_realdebrid_resolve(d->url, d->game_title, d->password, d->dialog);
+    trigger_realdebrid_resolve(d->url, d->game_title, d->password, d->dialog, NULL);
     free(d);
 }
 
@@ -4971,19 +4993,20 @@ static gboolean url_looks_direct_file(const char *url) {
     return FALSE;
 }
 
-/* Returns TRUE when a download/resolve action was started. */
+/* Returns TRUE when a download/resolve action was started (session ownership moves with it). */
 static gboolean dlps_dispatch_link(const char *url, const char *title,
-                                   const char *pass, gboolean from_clipboard) {
+                                   const char *pass, gboolean from_clipboard,
+                                   AutoSession *sess) {
     if (!url || strncmp(url, "http", 4) != 0) return FALSE;
 
     if (url_is_protected(url)) {
-        if (!from_clipboard)
+        if (!from_clipboard && !sess)
             show_toast("Link protetto: completa la verifica nel browser, poi copia il link finale.");
         return FALSE;
     }
 
     if (strstr(url, "mediafire.com/file/")) {
-        trigger_mediafire_resolve(url, title, pass, NULL);
+        trigger_mediafire_resolve(url, title, pass, NULL, sess);
         return TRUE;
     }
 
@@ -4992,11 +5015,12 @@ static gboolean dlps_dispatch_link(const char *url, const char *title,
         snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", title);
         show_toast("Link diretto rilevato: download avviato verso la PS!");
         start_single_download(url, dest_name, pass);
+        auto_session_free(sess);
         return TRUE;
     }
 
     if (g_realdebrid_token[0]) {
-        trigger_realdebrid_resolve(url, title, pass, NULL);
+        trigger_realdebrid_resolve(url, title, pass, NULL, sess);
         return TRUE;
     }
 
@@ -5042,7 +5066,7 @@ static void on_clip_watch_text(GObject *source, GAsyncResult *res, gpointer data
     char *clean = g_strstrip(g_strdup(text));
     g_free(text);
     if (g_clip_watch.armed &&
-        dlps_dispatch_link(clean, g_clip_watch.title, g_clip_watch.pass, TRUE)) {
+        dlps_dispatch_link(clean, g_clip_watch.title, g_clip_watch.pass, TRUE, NULL)) {
         clip_watch_disarm();
     }
     g_free(clean);
@@ -5068,40 +5092,89 @@ static void clip_watch_arm(const char *title, const char *pass) {
     g_clip_watch.armed = TRUE;
 }
 
+/* Ordered candidate list for one-click download; each failure moves to the next link. */
+struct AutoSession {
+    char title[256];
+    char pass[128];
+    DlpsLink links[DLPS_MAX_LINKS];
+    int n;
+    int idx;
+};
+
+static void auto_session_free(AutoSession *sess) {
+    free(sess);
+}
+
+static gboolean link_is_extra_content(const DlpsLink *l) {
+    return g_ascii_strncasecmp(l->name, "update", 6) == 0 ||
+           g_ascii_strncasecmp(l->name, "dlc", 3) == 0 ||
+           g_ascii_strncasecmp(l->name, "patch", 5) == 0;
+}
+
+static int link_auto_rank(const DlpsLink *l) {
+    switch (l->type) {
+        case DLPS_LINK_DIRECT_PKG: return 0;
+        case DLPS_LINK_MEDIAFIRE:  return 1;
+        case DLPS_LINK_HOSTER:     return g_realdebrid_token[0] ? 2 : 5;
+        case DLPS_LINK_PROTECTOR:  return 4;
+        default:                   return 9;
+    }
+}
+
+static void auto_session_next(AutoSession *sess) {
+    if (!sess) return;
+    while (sess->idx < sess->n) {
+        const DlpsLink *l = &sess->links[sess->idx++];
+        if (link_auto_rank(l) > 2) continue;   /* needs a human: handled as last resort */
+        if (dlps_dispatch_link(l->url, sess->title, sess->pass, FALSE, sess))
+            return;                            /* session now owned by the started action */
+    }
+
+    /* Nothing could be resolved automatically: open the first protected/hoster page and
+     * wait for the user to copy the final link. */
+    const char *manual = NULL;
+    for (int i = 0; i < sess->n; i++) {
+        if (link_auto_rank(&sess->links[i]) > 2) { manual = sess->links[i].url; break; }
+    }
+    if (manual) {
+        clip_watch_arm(sess->title, sess->pass);
+        g_app_info_launch_default_for_uri(manual, NULL, NULL);
+        show_toast("Serve una verifica manuale: completala nel browser e copia il link finale, il download parte da solo.");
+    } else {
+        show_toast("Nessun link scaricabile automaticamente per questo gioco.");
+    }
+    auto_session_free(sess);
+}
+
 static void on_dlps_auto_clicked(GtkButton *btn, gpointer user_data) {
     const DlpsGame *game = (const DlpsGame *)user_data;
     GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(btn));
-    if (!game) return;
-
-    /* Rank links: direct .pkg > Mediafire > hoster via Real-Debrid > protected page > hoster page */
-    int best = -1, best_rank = 99;
-    for (int i = 0; i < game->n_links; i++) {
-        int rank;
-        switch (game->links[i].type) {
-            case DLPS_LINK_DIRECT_PKG: rank = 0; break;
-            case DLPS_LINK_MEDIAFIRE:  rank = 1; break;
-            case DLPS_LINK_HOSTER:     rank = g_realdebrid_token[0] ? 2 : 5; break;
-            case DLPS_LINK_PROTECTOR:  rank = 4; break;
-            default:                   rank = 9; break;
-        }
-        if (rank < best_rank) { best_rank = rank; best = i; }
-    }
-    if (best < 0) {
+    if (!game || game->n_links <= 0) {
         show_toast("Nessun link disponibile per questo gioco.");
         return;
     }
 
-    const char *url = game->links[best].url;
-    if (root && GTK_IS_WINDOW(root)) gtk_window_destroy(GTK_WINDOW(root));
+    AutoSession *sess = calloc(1, sizeof(AutoSession));
+    if (!sess) return;
+    strncpy(sess->title, game->title, sizeof(sess->title) - 1);
+    strncpy(sess->pass, game->password, sizeof(sess->pass) - 1);
 
-    if (best_rank <= 2 && dlps_dispatch_link(url, game->title, game->password, FALSE)) {
-        return;
+    /* Order: main game before update/DLC (extras only if nothing else exists),
+     * then by rank: direct .pkg > Mediafire > hoster via Real-Debrid > manual links. */
+    gboolean has_main = FALSE;
+    for (int i = 0; i < game->n_links; i++)
+        if (!link_is_extra_content(&game->links[i])) has_main = TRUE;
+
+    for (int rank = 0; rank <= 9; rank++) {
+        for (int i = 0; i < game->n_links && sess->n < DLPS_MAX_LINKS; i++) {
+            if (has_main && link_is_extra_content(&game->links[i])) continue;
+            if (link_auto_rank(&game->links[i]) == rank)
+                sess->links[sess->n++] = game->links[i];
+        }
     }
 
-    /* Link is behind a human verification: open it and wait for the unlocked link */
-    clip_watch_arm(game->title, game->password);
-    g_app_info_launch_default_for_uri(url, NULL, NULL);
-    show_toast("Completa la verifica nel browser e copia il link finale: il download parte da solo.");
+    if (root && GTK_IS_WINDOW(root)) gtk_window_destroy(GTK_WINDOW(root));
+    auto_session_next(sess);
 }
 
 
@@ -5167,7 +5240,7 @@ static void on_start_direct_dl_clicked(GtkButton *btn, gpointer user_data) {
     }
 
     if (strstr(url, "mediafire.com/file/")) {
-        trigger_mediafire_resolve(url, data->game_title, data->password, data->dialog);
+        trigger_mediafire_resolve(url, data->game_title, data->password, data->dialog, NULL);
         free(data);
         return;
     }

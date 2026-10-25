@@ -10,7 +10,7 @@
 set -euo pipefail
 
 PKG_NAME="ps-ftp-downloader"
-PKG_VERSION="1.3.3"
+PKG_VERSION="1.3.4"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
 PKG_DESCRIPTION="Download PKG directly from network to PS via FTP — with split-archive & DLPSGame PS4 catalog"
