@@ -4795,7 +4795,7 @@ static void extract_dlps_region(const char *decoded, const char *html_content, D
     gboolean matched = FALSE;
     if (decoded && g_regex_match(reg_re, decoded, 0, &reg_info)) {
         matched = TRUE;
-    } else if (html_content && g_regex_match(reg_re, html_content, 0, &reg_info)) {
+    } else if (!decoded && html_content && g_regex_match(reg_re, html_content, 0, &reg_info)) {
         matched = TRUE;
     }
     if (matched) {
@@ -4818,18 +4818,17 @@ static void extract_dlps_region(const char *decoded, const char *html_content, D
 
     /* Heuristic / fallback */
     if (!g->region[0]) {
-        const char *d = decoded ? decoded : "";
-        const char *h = html_content ? html_content : "";
-        if (strstr(d, "USA") || strstr(h, "USA") || strstr(g->title, "USA") ||
+        const char *d = decoded ? decoded : (html_content ? html_content : "");
+        if (strstr(d, "USA") || (!decoded && strstr(g->title, "USA")) ||
             strncmp(g->cusa, "BLUS", 4) == 0 || strncmp(g->cusa, "NPUB", 4) == 0 || strncmp(g->cusa, "ULUS", 4) == 0) {
             strncpy(g->region, "USA", sizeof(g->region) - 1);
-        } else if (strstr(d, "EUR") || strstr(h, "EUR") || strstr(g->title, "EUR") ||
+        } else if (strstr(d, "EUR") || (!decoded && strstr(g->title, "EUR")) ||
                    strncmp(g->cusa, "BLES", 4) == 0 || strncmp(g->cusa, "NPEB", 4) == 0 || strncmp(g->cusa, "ULES", 4) == 0) {
             strncpy(g->region, "EUR", sizeof(g->region) - 1);
-        } else if (strstr(d, "JPN") || strstr(h, "JPN") || strstr(g->title, "JPN") ||
+        } else if (strstr(d, "JPN") || (!decoded && strstr(g->title, "JPN")) ||
                    strncmp(g->cusa, "BLJM", 4) == 0 || strncmp(g->cusa, "NPJB", 4) == 0) {
             strncpy(g->region, "JPN", sizeof(g->region) - 1);
-        } else if (strstr(d, "ASIA") || strstr(h, "ASIA") || strstr(g->title, "ASIA")) {
+        } else if (strstr(d, "ASIA") || (!decoded && strstr(g->title, "ASIA"))) {
             strncpy(g->region, "ASIA", sizeof(g->region) - 1);
         }
     }
@@ -4970,78 +4969,102 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 g_match_info_free(minfo);
                 g_regex_unref(year_re);
 
-                /* 4. Extract data-payload base64 */
+                /* 4. Extract data-payload base64 (may contain multiple regions, e.g. USA + EUR) */
                 GRegex *pl_re = g_regex_new("data-payload=[\"']([^\"']+)[\"']", 0, 0, NULL);
-                if (g_regex_match(pl_re, html_content, 0, &minfo)) {
-                    char *b64 = g_match_info_fetch(minfo, 1);
-                    if (b64) {
-                        gsize out_len = 0;
-                        guchar *raw = g_base64_decode(b64, &out_len);
-                        if (raw) {
-                            char *decoded = g_strndup((char *)raw, out_len);
+                GMatchInfo *pl_info = NULL;
+                int payload_count = 0;
+                DlpsGame payload_games[4];
+                memset(payload_games, 0, sizeof(payload_games));
 
-                            /* Find password */
-                            GRegex *pwd_re = g_regex_new("Password\\s*:\\s*([^\\s<]+)", G_REGEX_CASELESS, 0, NULL);
-                            GMatchInfo *pwd_info = NULL;
-                            if (g_regex_match(pwd_re, decoded, 0, &pwd_info)) {
-                                char *p = g_match_info_fetch(pwd_info, 1);
-                                if (p) {
-                                    strncpy(g.password, g_strstrip(p), sizeof(g.password) - 1);
-                                    g_free(p);
+                if (g_regex_match(pl_re, html_content, 0, &pl_info)) {
+                    while (g_match_info_matches(pl_info) && payload_count < 4) {
+                        char *b64 = g_match_info_fetch(pl_info, 1);
+                        if (b64) {
+                            gsize out_len = 0;
+                            guchar *raw = g_base64_decode(b64, &out_len);
+                            if (raw) {
+                                char *decoded = g_strndup((char *)raw, out_len);
+                                DlpsGame pg = g; /* copy common post metadata */
+
+                                /* Find password (handles Password, Pasword, etc.) */
+                                GRegex *pwd_re = g_regex_new("Pass?w(?:or|0r)d?\\s*:\\s*([^\\s<]+)", G_REGEX_CASELESS, 0, NULL);
+                                GMatchInfo *pwd_info = NULL;
+                                if (g_regex_match(pwd_re, decoded, 0, &pwd_info)) {
+                                    char *p = g_match_info_fetch(pwd_info, 1);
+                                    if (p) {
+                                        strncpy(pg.password, g_strstrip(p), sizeof(pg.password) - 1);
+                                        g_free(p);
+                                    }
                                 }
-                            }
-                            g_match_info_free(pwd_info);
-                            g_regex_unref(pwd_re);
+                                g_match_info_free(pwd_info);
+                                g_regex_unref(pwd_re);
 
-                            /* Fallback Title ID if not in table */
-                            if (!g.cusa[0]) {
+                                /* Title ID from this payload */
                                 GRegex *cusa_re2 = g_regex_new("(CUSA|PPSA|NPUB|NPEB|BLUS|BLES|NPUA|NPHA|ULUS|ULES|UCUS)\\d{5}", G_REGEX_CASELESS, 0, NULL);
                                 GMatchInfo *cusa_info2 = NULL;
                                 if (g_regex_match(cusa_re2, decoded, 0, &cusa_info2)) {
                                     char *c = g_match_info_fetch(cusa_info2, 0);
                                     if (c) {
-                                        strncpy(g.cusa, c, sizeof(g.cusa) - 1);
+                                        strncpy(pg.cusa, c, sizeof(pg.cusa) - 1);
                                         g_free(c);
                                     }
                                 }
                                 g_match_info_free(cusa_info2);
                                 g_regex_unref(cusa_re2);
+
+                                extract_dlps_region(decoded, html_content, &pg);
+                                extract_dlps_links(decoded, &pg);
+
+                                payload_games[payload_count++] = pg;
+
+                                g_free(decoded);
+                                g_free(raw);
                             }
-
-                            extract_dlps_region(decoded, html_content, &g);
-
-                            /* Extract links with category prefix and hoster tags */
-                            extract_dlps_links(decoded, &g);
-
-                            g_free(decoded);
-                            g_free(raw);
+                            g_free(b64);
                         }
-                        g_free(b64);
+                        g_match_info_next(pl_info, NULL);
                     }
                 }
-                g_match_info_free(minfo);
+                g_match_info_free(pl_info);
                 g_regex_unref(pl_re);
 
-                if (!g.region[0]) {
-                    extract_dlps_region(NULL, html_content, &g);
+                if (payload_count == 0) {
+                    DlpsGame pg = g;
+                    extract_dlps_region(NULL, html_content, &pg);
+                    if (pg.n_links == 0 && pg.post_url[0]) {
+                        strncpy(pg.links[0].name, "Pagina DLPSGame", sizeof(pg.links[0].name) - 1);
+                        strncpy(pg.links[0].url, pg.post_url, sizeof(pg.links[0].url) - 1);
+                        pg.n_links = 1;
+                    }
+                    payload_games[payload_count++] = pg;
                 }
 
-                /* Client-side filter: if user requested Europa and detected region is definitely USA/JPN, skip */
-                if (region_filter == 1 && g.region[0] && strcmp(g.region, "EUR") != 0 && strcmp(g.region, "EUROPE") != 0) {
-                    continue;
-                }
-                /* If user requested America and detected region is definitely EUR/JPN, skip */
-                if (region_filter == 2 && g.region[0] && strcmp(g.region, "USA") != 0 && strcmp(g.region, "AMERICA") != 0) {
-                    continue;
-                }
+                for (int p_idx = 0; p_idx < payload_count && count < max_games; p_idx++) {
+                    DlpsGame *pg = &payload_games[p_idx];
 
-                if (g.n_links == 0 && g.post_url[0]) {
-                    strncpy(g.links[0].name, "Pagina DLPSGame", sizeof(g.links[0].name) - 1);
-                    strncpy(g.links[0].url, g.post_url, sizeof(g.links[0].url) - 1);
-                    g.n_links = 1;
-                }
+                    /* Region filter check:
+                     * region_filter == 1 (Europa): only keep EUR
+                     * region_filter == 2 (America): only keep USA
+                     * region_filter == 3 (Giappone/Asia): only keep JPN / ASIA
+                     */
+                    if (region_filter == 1 && pg->region[0] && strcmp(pg->region, "EUR") != 0 && strcmp(pg->region, "EUROPE") != 0) {
+                        continue;
+                    }
+                    if (region_filter == 2 && pg->region[0] && strcmp(pg->region, "USA") != 0 && strcmp(pg->region, "AMERICA") != 0) {
+                        continue;
+                    }
+                    if (region_filter == 3 && pg->region[0] && strcmp(pg->region, "JPN") != 0 && strcmp(pg->region, "JAPAN") != 0 && strcmp(pg->region, "ASIA") != 0) {
+                        continue;
+                    }
 
-                out_games[count++] = g;
+                    if (payload_count > 1 && pg->region[0] && !strstr(pg->title, pg->region)) {
+                        char clarified[256];
+                        snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
+                        strncpy(pg->title, clarified, sizeof(pg->title) - 1);
+                    }
+
+                    out_games[count++] = *pg;
+                }
             }
         }
     } else {
