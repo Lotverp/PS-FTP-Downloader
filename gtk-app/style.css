@@ -604,10 +604,18 @@ popover listview > row label selection {
 }
 
 /* ── Progress bar ── */
+progressbar {
+    min-height: 6px;
+    margin: 0;
+    padding: 0;
+}
+
 progressbar trough {
     background: rgba(255, 255, 255, 0.07);
     border-radius: 99px;
     min-height: 6px;
+    margin: 0;
+    padding: 0;
     border: none;
 }
 
@@ -615,6 +623,9 @@ progressbar progress {
     background: linear-gradient(90deg, #6366f1, #a78bfa, #38bdf8);
     border-radius: 99px;
     min-height: 6px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
     border: none;
 }
 
@@ -968,12 +979,16 @@ searchentry text {
 .toast-progress {
     min-width: 140px;
     min-height: 6px;
+    margin: 0;
+    padding: 0;
 }
 
 .toast-progress trough {
     background-color: rgba(255, 255, 255, 0.12);
     border-radius: 3px;
     min-height: 6px;
+    margin: 0;
+    padding: 0;
     border: none;
 }
 
@@ -981,6 +996,9 @@ searchentry text {
     background: linear-gradient(90deg, #10b981, #4ade80);
     border-radius: 3px;
     min-height: 6px;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
     box-shadow: 0 0 8px rgba(74, 222, 128, 0.5);
     border: none;
 }
