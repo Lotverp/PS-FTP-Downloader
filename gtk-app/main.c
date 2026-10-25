@@ -2759,6 +2759,9 @@ static Download *start_single_download(const char *url,
     GtkWidget *row = create_download_row(dl);
     gtk_list_box_append(GTK_LIST_BOX(g_list_box), row);
     update_stats();
+    if (g_stack) {
+        gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "list");
+    }
 
     trigger_ftp_ensure_dir_async();
 
@@ -2868,6 +2871,9 @@ static Download *start_split_download(const char **urls, int n,
     GtkWidget *row = create_download_row(dl);
     gtk_list_box_append(GTK_LIST_BOX(g_list_box), row);
     update_stats();
+    if (g_stack) {
+        gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "list");
+    }
 
     trigger_ftp_ensure_dir_async();
 
@@ -6570,7 +6576,9 @@ static void on_dlps_auto_clicked(GtkButton *btn, gpointer user_data) {
         }
     }
 
-    if (root && GTK_IS_WINDOW(root)) gtk_window_destroy(GTK_WINDOW(root));
+    if (root && GTK_IS_WINDOW(root) && g_window && GTK_WINDOW(root) != GTK_WINDOW(g_window)) {
+        gtk_window_destroy(GTK_WINDOW(root));
+    }
     auto_session_next(sess);
 }
 
@@ -7019,9 +7027,9 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 /* DLPS ListView item factory */
 static void on_dlps_card_details_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
-    DlpsGameObject *obj = DLPS_GAME_OBJECT(user_data);
-    if (!obj || !obj->game) return;
-    show_dlps_game_details_dialog(GTK_WINDOW(g_window), obj->game);
+    const DlpsGame *game = (const DlpsGame *)user_data;
+    if (!game) return;
+    show_dlps_game_details_dialog(GTK_WINDOW(g_window), game);
 }
 
 static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list_item, gpointer user_data) {
@@ -7210,7 +7218,17 @@ static void on_dlps_item_bind(GtkSignalListItemFactory *self, GtkListItem *list_
     }
 
     g_signal_handlers_disconnect_by_func(btn, G_CALLBACK(on_dlps_card_details_clicked), NULL);
-    g_signal_connect(btn, "clicked", G_CALLBACK(on_dlps_card_details_clicked), obj);
+    g_signal_connect(btn, "clicked", G_CALLBACK(on_dlps_card_details_clicked), (gpointer)obj->game);
+}
+
+static void on_dlps_item_unbind(GtkSignalListItemFactory *self, GtkListItem *list_item, gpointer user_data) {
+    (void)self; (void)user_data;
+    GtkWidget *card = gtk_list_item_get_child(list_item);
+    if (!card) return;
+    GtkWidget *btn = g_object_get_data(G_OBJECT(card), "btn");
+    GtkWidget *btn_auto = g_object_get_data(G_OBJECT(card), "btn_auto");
+    if (btn) g_signal_handlers_disconnect_by_func(btn, G_CALLBACK(on_dlps_card_details_clicked), NULL);
+    if (btn_auto) g_signal_handlers_disconnect_by_func(btn_auto, G_CALLBACK(on_dlps_auto_clicked), NULL);
 }
 
 static void on_dlps_console_changed(GObject *gobject, GParamSpec *pspec, gpointer user_data) {
@@ -7419,6 +7437,7 @@ static GtkWidget *build_dlpsgame_page(void) {
     GtkSignalListItemFactory *factory = GTK_SIGNAL_LIST_ITEM_FACTORY(gtk_signal_list_item_factory_new());
     g_signal_connect(factory, "setup", G_CALLBACK(on_dlps_item_setup), NULL);
     g_signal_connect(factory, "bind", G_CALLBACK(on_dlps_item_bind), NULL);
+    g_signal_connect(factory, "unbind", G_CALLBACK(on_dlps_item_unbind), NULL);
 
     GtkWidget *list_view = gtk_list_view_new(GTK_SELECTION_MODEL(sel), GTK_LIST_ITEM_FACTORY(factory));
 
