@@ -106,6 +106,28 @@ def is_direct_stream_url(url):
             return True
     return False
 
+def verify_download_link(url, cookie_str=None, user_agent=None, referer=None, timeout=6):
+    """Performs a quick HTTP check to verify the URL does not return 404/410/403/500."""
+    import urllib.request
+    try:
+        headers = {
+            'User-Agent': user_agent or 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Range': 'bytes=0-10'
+        }
+        if referer:
+            headers['Referer'] = referer
+        if cookie_str:
+            headers['Cookie'] = cookie_str
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status in (200, 206, 301, 302, 303, 307)
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 410, 403, 500, 502):
+            return False
+        return e.code not in (404, 410)
+    except Exception:
+        return True
+
 def wait_for_cloudflare(driver, timeout=20):
     """Wait for Cloudflare Turnstile / Managed Challenge to complete."""
     from selenium.webdriver.common.by import By
@@ -527,14 +549,14 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
 
                     if not href.startswith("http") or is_protector_url(href):
                         continue
-                    # Priority: AkiraBox, FileDitch, Vikingfile, Mediafire, Datanodes, Rootz
+                    # Priority: Mediafire, FileDitch, Pixeldrain, Vikingfile, Rootz, AkiraBox, 1fichier
                     prio = 99
-                    if "akirabox" in href: prio = 1
+                    if "mediafire" in href: prio = 1
                     elif "itsfileditchfiles" in href or "fileditch" in href: prio = 2
-                    elif "mediafire" in href: prio = 3
+                    elif "pixeldrain" in href: prio = 3
                     elif "vikingfile" in href or "vik1ngfile" in href: prio = 4
-                    elif "datanodes" in href: prio = 5
-                    elif "rootz.so" in href: prio = 6
+                    elif "datanodes" in href or "rootz.so" in href: prio = 5
+                    elif "akirabox" in href: prio = 6
                     elif "1fichier" in href: prio = 7
 
                     if prio < 99 or any(h in href for h in HOSTER_DOMAINS):
@@ -542,13 +564,49 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
 
                 if hoster_candidates:
                     hoster_candidates.sort(key=lambda x: x[0])
-                    # Navigate to the best hoster
-                    best_hoster_url = hoster_candidates[0][1]
-                    try:
-                        driver.get(best_hoster_url)
-                        wait_for_cloudflare(driver, timeout=15)
-                    except Exception:
-                        pass
+                    for _, cand_url, _ in hoster_candidates:
+                        try:
+                            driver.get(cand_url)
+                            wait_for_cloudflare(driver, timeout=12)
+                            cand_direct = extract_direct_download_from_hoster(driver, timeout=8)
+                            if not cand_direct:
+                                curr = driver.current_url or ""
+                                if is_direct_stream_url(curr):
+                                    cand_direct = curr
+                            if not cand_direct:
+                                for h in driver.window_handles:
+                                    try:
+                                        driver.switch_to.window(h)
+                                        w_url = driver.current_url or ""
+                                        if is_direct_stream_url(w_url):
+                                            cand_direct = w_url
+                                            break
+                                    except Exception:
+                                        pass
+                            if cand_direct:
+                                cookie_parts = [f"{c['name']}={c['value']}" for c in driver.get_cookies()]
+                                cookie_str = "; ".join(cookie_parts)
+                                user_agent = driver.execute_script("return navigator.userAgent;") or ""
+                                referer_url = driver.current_url or cand_url
+                                if verify_download_link(cand_direct, cookie_str, user_agent, referer_url):
+                                    return {
+                                        "success": True,
+                                        "url": cand_direct,
+                                        "title": driver.title,
+                                        "cookie": cookie_str,
+                                        "user_agent": user_agent,
+                                        "referer": referer_url,
+                                        "password": detected_password or "",
+                                        "source": "resolved_direct_cdn"
+                                    }
+                        except Exception:
+                            continue
+
+                    return {
+                        "success": False,
+                        "error": "ALL_HOSTERS_OFFLINE",
+                        "message": "Tutti i mirror per questo file risultano rimossi o non disponibili (404/403/scaduti)."
+                    }
 
         # Step 2: Now on hoster page (or already on hoster) — extract direct download
         direct_download_url = extract_direct_download_from_hoster(driver, timeout=15)
@@ -587,7 +645,7 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
             pass
 
         referer_url = driver.current_url or current_page
-        if direct_download_url:
+        if direct_download_url and verify_download_link(direct_download_url, cookie_str, user_agent, referer_url):
             return {
                 "success": True,
                 "url": direct_download_url,
