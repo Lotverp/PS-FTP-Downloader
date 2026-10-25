@@ -33,18 +33,25 @@ PROTECTOR_DOMAINS = [
 
 # Hoster landing pages (require extraction of real download button)
 HOSTER_DOMAINS = [
-    "itsfileditchfiles.st",
-    "fileditch.com",
+    "mediafire.com",
+    "1fichier.com",
+    "pixeldrain.com",
+    "mega.nz",
+    "mega.co.nz",
+    "drive.google.com",
     "akirabox.to",
     "akirabox.com",
     "vikingfile.com",
     "vik1ngfile.site",
     "rootz.so",
     "datanodes.to",
-    "mediafire.com",
-    "1fichier.com",
-    "pixeldrain.com",
-    "mega.nz",
+    "itsfileditchfiles.st",
+    "fileditch.com",
+    "rapidgator.net",
+    "qiwi.gg",
+    "gofile.io",
+    "bowfile.com",
+    "hexload.com",
 ]
 
 # Direct CDN / File stream patterns that don't need further navigation
@@ -93,18 +100,49 @@ def check_dependencies():
     }
 
 def is_protector_url(url):
+    if not url: return False
     netloc = urlparse(url).netloc.lower()
     return any(p in netloc for p in PROTECTOR_DOMAINS)
 
 def is_hoster_landing_page(url):
+    if not url: return False
     netloc = urlparse(url).netloc.lower()
     return any(h in netloc for h in HOSTER_DOMAINS)
 
 def is_direct_stream_url(url):
+    if not url: return False
     for p in DIRECT_CDN_PATTERNS:
         if p.search(url):
             return True
     return False
+
+def is_direct_file_url(url):
+    if not url or not url.startswith("http"): return False
+    clean = url.split("?")[0].lower()
+    return any(clean.endswith(ext) for ext in [".pkg", ".rar", ".7z", ".zip", ".iso", ".bin"])
+
+def close_rogue_ad_windows(driver, main_handle=None):
+    """Closes any rogue popup or ad windows that do not belong to legitimate hosters or protectors."""
+    try:
+        handles = list(driver.window_handles)
+    except Exception:
+        return
+    for h in handles:
+        if main_handle and h == main_handle:
+            continue
+        try:
+            driver.switch_to.window(h)
+            curr = (driver.current_url or "").lower()
+            if not is_hoster_landing_page(curr) and not is_protector_url(curr) and not is_direct_stream_url(curr) and not is_direct_file_url(curr):
+                driver.close()
+        except Exception:
+            pass
+    if main_handle:
+        try:
+            if main_handle in driver.window_handles:
+                driver.switch_to.window(main_handle)
+        except Exception:
+            pass
 
 def verify_download_link(url, cookie_str=None, user_agent=None, referer=None, timeout=6):
     """Performs a quick HTTP check to verify the URL does not return 404/410/403/500."""
@@ -191,44 +229,63 @@ def fast_solve_sha1_pow(challenge, difficulty, max_workers=None):
 def handle_filecrypt(driver, timeout=35, password=None):
     """Handles filecrypt container pages: pow-captcha, password submission, and container unlocking."""
     from selenium.webdriver.common.by import By
-    from selenium.webdriver.common.action_chains import ActionChains
 
     start = time.time()
+    main_handle = driver.current_window_handle
 
-    # 1. Handle password form if present
-    if password:
+    def try_submit_password():
+        if not password:
+            return False
         try:
-            pass_inps = driver.find_elements(By.CSS_SELECTOR, "#p4assw0rt, input[name='password']")
-            if pass_inps and pass_inps[0].is_displayed():
-                pass_inps[0].clear()
-                pass_inps[0].send_keys(password)
+            pass_inps = driver.find_elements(By.CSS_SELECTOR, "#p4assw0rt, input[name='password'], input[type='password']")
+            vis_inps = [p for p in pass_inps if p.is_displayed()]
+            if vis_inps:
+                vis_inps[0].clear()
+                vis_inps[0].send_keys(password)
                 submits = driver.find_elements(By.CSS_SELECTOR, "button, input[type='submit']")
                 for s in submits:
                     if s.is_displayed():
                         s.click()
                         time.sleep(2.0)
-                        break
+                        close_rogue_ad_windows(driver, main_handle)
+                        return True
         except Exception:
             pass
+        return False
 
-    # 2. Click CutCaptcha / PoW checkbox to initiate
+    # 1. Handle password form if present initially
+    try_submit_password()
+
+    # 2. Click CutCaptcha / PoW checkbox with native trusted CDP click
     try:
-        boxes = driver.find_elements(By.CSS_SELECTOR, ".pow-captcha__box, #pow-captcha")
-        if boxes and boxes[0].is_displayed():
+        boxes = driver.find_elements(By.CSS_SELECTOR, ".pow-captcha__box, .pow-captcha")
+        vis_boxes = [b for b in boxes if b.is_displayed()]
+        if vis_boxes:
+            box = vis_boxes[0]
             try:
-                actions = ActionChains(driver)
-                actions.move_to_element(boxes[0]).pause(0.3).click().perform()
+                rect = driver.execute_script("return arguments[0].getBoundingClientRect();", box)
+                x = int(rect['x'] + rect['width'] / 2)
+                y = int(rect['y'] + rect['height'] / 2)
+                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x - 40, 'y': y - 40})
+                time.sleep(0.08)
+                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x, 'y': y})
+                time.sleep(0.08)
+                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mousePressed', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1})
+                time.sleep(0.08)
+                driver.execute_cdp_cmd('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1})
             except Exception:
                 try:
-                    boxes[0].click()
+                    box.click()
                 except Exception:
                     pass
+            time.sleep(1.0)
+            close_rogue_ad_windows(driver, main_handle)
     except Exception:
         pass
 
     # 3. Intercept challenge data and fast-solve in Python
     ch_data = None
-    for _ in range(25):
+    for _ in range(15):
         try:
             ch_data = driver.execute_script("return window.__fc_challenge;")
             if ch_data and ch_data.get("challenge"):
@@ -239,13 +296,12 @@ def handle_filecrypt(driver, timeout=35, password=None):
 
     if ch_data and ch_data.get("challenge"):
         challenge = ch_data["challenge"]
-        difficulty = int(ch_data.get("difficulty", 24))
+        difficulty = int(ch_data.get("difficulty", 18))
         try:
             t0 = time.time()
             nonce = fast_solve_sha1_pow(challenge, difficulty)
             t1 = time.time()
 
-            # Wait realistic time (14-16s) so FileCrypt biometrics & timing validation pass
             solve_time = t1 - t0
             simulated_wait = random.uniform(14.0, 16.5)
             remaining_wait = max(0.5, simulated_wait - solve_time)
@@ -260,7 +316,7 @@ def handle_filecrypt(driver, timeout=35, password=None):
                 if (w && w.onmessage) {
                     w.onmessage({
                         data: {
-                            type: "done",
+                            type: 'done',
                             nonce: nonce,
                             hashes: nonce + 1,
                             ms: ms,
@@ -272,33 +328,34 @@ def handle_filecrypt(driver, timeout=35, password=None):
         except Exception:
             pass
 
-    # 4. Wait for container links to unlock and navigate to hoster
+    # 4. Wait for container links to unlock or password prompt to appear
     while time.time() - start < timeout:
+        close_rogue_ad_windows(driver, main_handle)
+
+        # Check if password form appeared after captcha
+        try_submit_password()
+
         try:
-            links = driver.find_elements(By.CSS_SELECTOR, "a.button.download, a.btn_dl, a[onclick*='openLink'], a[href*='/Link/']")
+            # Look for legitimate download links; strictly exclude bot honeypots like /Link/1
+            links = driver.find_elements(By.CSS_SELECTOR, "a.button.download, a.btn_dl, a[onclick*='openLink'], button.download, button.btn_dl")
             valid_links = [l for l in links if l.is_displayed() and "display:none" not in (l.get_attribute("style") or "")]
             if valid_links:
-                href = valid_links[0].get_attribute("href") or ""
-                onclick = valid_links[0].get_attribute("onclick") or ""
-                if "openLink(" in onclick:
-                    m = re.search(r"openLink\(['\"]([^'\"]+)['\"]\)", onclick)
-                    if m:
-                        href = f"https://filecrypt.cc/Link/{m.group(1)}.html"
-                if href and href.startswith("http"):
-                    try:
-                        driver.get(href)
-                        time.sleep(3.0)
-                        wait_for_cloudflare(driver, timeout=10)
-                        return True
-                    except Exception:
-                        pass
-                # Fallback: click link
-                try:
-                    valid_links[0].click()
-                    time.sleep(3.0)
-                    return True
-                except Exception:
-                    return True
+                for vl in valid_links:
+                    href = vl.get_attribute("href") or ""
+                    onclick = vl.get_attribute("onclick") or ""
+                    if "openLink(" in onclick:
+                        m = re.search(r"openLink\(['\"]([^'\"]+)['\"]\)", onclick)
+                        if m and m.group(1) != "1":
+                            href = f"https://filecrypt.cc/Link/{m.group(1)}.html"
+                    if href and href.startswith("http") and not href.endswith("/Link/1"):
+                        try:
+                            driver.get(href)
+                            time.sleep(2.5)
+                            close_rogue_ad_windows(driver, driver.current_window_handle)
+                            wait_for_cloudflare(driver, timeout=10)
+                            return True
+                        except Exception:
+                            pass
         except Exception:
             pass
 
@@ -354,7 +411,7 @@ def extract_direct_download_from_hoster(driver, timeout=15):
                 mf_btns = driver.find_elements(By.CSS_SELECTOR, "#downloadButton, a.input, a.download_link")
                 for btn in mf_btns:
                     href = btn.get_attribute("href") or ""
-                    if href.startswith("http") and "mediafire.com" not in href or "download" in href:
+                    if href.startswith("http") and ("mediafire.com" not in href or "download" in href):
                         return href
 
             # Pixeldrain
@@ -439,7 +496,6 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
-    options.add_argument("--disable-popup-blocking")
     options.add_argument("--disable-blink-features=AutomationControlled")
     prefs = {
         "download.default_directory": "/dev/null",
@@ -447,6 +503,8 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
         "download.directory_upgrade": True,
         "safebrowsing.enabled": False,
         "plugins.always_open_pdf_externally": True,
+        "profile.default_content_setting_values.popups": 2,
+        "profile.default_content_setting_values.notifications": 2,
     }
     options.add_experimental_option("prefs", prefs)
     if headless:
@@ -528,7 +586,7 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
             if "filecrypt." in current_page:
                 handle_filecrypt(driver, timeout=35, password=password)
                 best_win = None
-                best_score = -1
+                best_score = 0
                 for h in driver.window_handles:
                     try:
                         driver.switch_to.window(h)
@@ -542,12 +600,14 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
                                 elif w_url.rstrip("/").count("/") > 2:
                                     score = 50
                                 break
+                        if is_direct_file_url(w_url):
+                            score = 150
                         if score > best_score:
                             best_score = score
                             best_win = h
                     except Exception:
                         pass
-                if best_win:
+                if best_win and best_score > 0:
                     driver.switch_to.window(best_win)
                     current_page = driver.current_url or ""
 
@@ -680,16 +740,23 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
         # If still on a hoster landing page and could not extract direct, return hoster page URL with cookies
         final_url = driver.current_url
         if final_url and final_url != url:
-            return {
-                "success": True,
-                "url": final_url,
-                "title": driver.title,
-                "cookie": cookie_str,
-                "user_agent": user_agent,
-                "referer": final_url,
-                "password": detected_password or "",
-                "source": "hoster_page"
-            }
+            if any(err_ind in final_url.lower() for err_ind in ["error.php", "errno=", "deleted", "notfound", "file_removed", "removed"]):
+                return {
+                    "success": False,
+                    "error": "FILE_REMOVED",
+                    "message": "Il file è stato rimosso o eliminato dall'hoster (DMCA/link scaduto)."
+                }
+            if is_hoster_landing_page(final_url) or is_direct_stream_url(final_url) or is_direct_file_url(final_url):
+                return {
+                    "success": True,
+                    "url": final_url,
+                    "title": driver.title,
+                    "cookie": cookie_str,
+                    "user_agent": user_agent,
+                    "referer": final_url,
+                    "password": detected_password or "",
+                    "source": "hoster_page"
+                }
 
         if "filecrypt." in current_page:
             if headless:

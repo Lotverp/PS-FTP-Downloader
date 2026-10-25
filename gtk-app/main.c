@@ -231,7 +231,12 @@ static gboolean is_uc_resolver_available(void);
 static void trigger_uc_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
 static void trigger_mediafire_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
 static void trigger_onefichier_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
+static void trigger_realdebrid_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
 static void trigger_dlps_fetch(const char *query, int page);
+static void on_dlps_auto_clicked(GtkButton *btn, gpointer user_data);
+static gboolean url_looks_direct_file(const char *url);
+static gboolean g_dlps_auto_download_on_fetch = FALSE;
+static char g_dlps_auto_download_pass[128] = "";
 
 /* ═══════════════════════════════════════════════════════════
  * Utilità: formattazione leggibile di dimensioni, velocità ed ETA
@@ -2934,14 +2939,20 @@ G_GNUC_END_IGNORE_DEPRECATIONS
         return;
     }
 
-    if (strstr(url, "dlpsgame.com/")) {
+    if (strstr(url, "dlpsgame.com/") || strstr(url, "downloadgamepsp.org/")) {
+        g_dlps_auto_download_on_fetch = TRUE;
+        if (pass && pass[0]) {
+            g_strlcpy(g_dlps_auto_download_pass, pass, sizeof(g_dlps_auto_download_pass));
+        } else {
+            g_dlps_auto_download_pass[0] = '\0';
+        }
         if (g_stack) {
             gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "dlpsgame");
             if (g_dlps_search_entry) {
                 gtk_editable_set_text(GTK_EDITABLE(g_dlps_search_entry), url);
             }
             trigger_dlps_fetch(url, 1);
-            show_toast("Apertura gioco da DLPSGame...");
+            show_toast("Ricerca e avvio download automatico da DLPSGame...");
         }
         if (pass) g_free(pass);
         g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
@@ -5567,6 +5578,19 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
     if (g_dlps_btn_prev) gtk_widget_set_sensitive(g_dlps_btn_prev, g_dlps_current_page > 1);
     if (g_dlps_btn_next) gtk_widget_set_sensitive(g_dlps_btn_next, g_dlps_current_page < g_dlps_total_pages);
 
+    if (g_dlps_auto_download_on_fetch) {
+        g_dlps_auto_download_on_fetch = FALSE;
+        if (res->count > 0 && res->games) {
+            DlpsGame target_game = res->games[0];
+            if (g_dlps_auto_download_pass[0] && !target_game.password[0]) {
+                g_strlcpy(target_game.password, g_dlps_auto_download_pass, sizeof(target_game.password));
+            }
+            g_dlps_auto_download_pass[0] = '\0';
+            show_toast("Gioco trovato! Avvio download automatico verso la PS...");
+            on_dlps_auto_clicked(NULL, (gpointer)&target_game);
+        }
+    }
+
     if (res->games) free(res->games);
     free(res);
     return G_SOURCE_REMOVE;
@@ -6051,6 +6075,7 @@ static void on_dlps_mediafire_clicked(GtkButton *btn, gpointer user_data) {
 /* 1Fichier Background Resolver */
 typedef struct {
     int success;
+    char orig_url[2048];
     char direct_url[2048];
     char game_title[256];
     char password[128];
@@ -6071,6 +6096,11 @@ static gboolean on_onefichier_resolved_idle(gpointer user_data) {
         start_single_download(res->direct_url, dest_name, res->password);
         if (g_stack) gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "list");
         auto_session_free(res->sess);
+    } else if (res->wait_msg[0] && g_realdebrid_token[0] && res->orig_url[0]) {
+        char buf[256];
+        snprintf(buf, sizeof(buf), "1Fichier (%s): bypass attesa con Real-Debrid...", res->wait_msg);
+        show_prep_progress(buf);
+        trigger_realdebrid_resolve(res->orig_url, res->game_title, res->password, res->dialog, res->sess);
     } else if (res->sess) {
         if (res->wait_msg[0]) {
             char buf[200];
@@ -6096,6 +6126,7 @@ static gboolean on_onefichier_resolved_idle(gpointer user_data) {
 static void *onefichier_resolve_thread(void *arg) {
     DlpsActionData *req = (DlpsActionData *)arg;
     OneFichierRes *res = calloc(1, sizeof(OneFichierRes));
+    g_strlcpy(res->orig_url, req->url, sizeof(res->orig_url));
     g_strlcpy(res->game_title, req->game_title, sizeof(res->game_title));
     g_strlcpy(res->password, req->password, sizeof(res->password));
     res->dialog = req->dialog;
@@ -6106,7 +6137,15 @@ static void *onefichier_resolve_thread(void *arg) {
         DlpsMem chunk = { malloc(1), 0 };
         if (chunk.data) chunk.data[0] = '\0';
         curl_easy_setopt(c, CURLOPT_URL, req->url);
-        curl_easy_setopt(c, CURLOPT_POSTFIELDS, "submitz=1");
+        char postfields[384] = "submitz=1";
+        if (req->password[0]) {
+            char *esc = curl_easy_escape(c, req->password, 0);
+            if (esc) {
+                snprintf(postfields, sizeof(postfields), "submitz=1&pass=%s", esc);
+                curl_free(esc);
+            }
+        }
+        curl_easy_setopt(c, CURLOPT_POSTFIELDS, postfields);
         curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
         curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
@@ -6354,11 +6393,20 @@ static gboolean on_uc_resolved_idle(gpointer user_data) {
         }
         show_toast("Link sbloccato con Undetected ChromeDriver!");
         if (!dlps_dispatch_link(res->resolved_url, res->game_title, res->password, FALSE, NULL)) {
-            char dest_name[256];
-            snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
-            start_single_download(res->resolved_url, dest_name, res->password);
+            if (url_looks_direct_file(res->resolved_url) || strcasestr(res->resolved_url, "download")) {
+                char dest_name[256];
+                snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+                start_single_download(res->resolved_url, dest_name, res->password);
+                auto_session_free(res->sess);
+            } else if (res->sess) {
+                show_prep_progress("Risolutore UC: link non valido, provo successivo...");
+                auto_session_next(res->sess);
+            } else {
+                show_toast("Link risolto non valido per il download diretto.");
+            }
+        } else {
+            auto_session_free(res->sess);
         }
-        auto_session_free(res->sess);
     } else if (res->sess) {
         show_prep_progress("Risolutore UC: tentativo con link successivo...");
         auto_session_next(res->sess);
