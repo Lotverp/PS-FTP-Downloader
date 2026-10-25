@@ -183,7 +183,6 @@ list > row:selected {
 
 /* Clickable error badge — shows pointer cursor and pulsing glow on hover */
 .status-error-clickable {
-    cursor: pointer;
 }
 
 .status-error-clickable:hover {
@@ -340,3 +339,16 @@ headerbar {
     border: none;
     box-shadow: none;
 }
+
+.success-label {
+    color: #4ade80;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.error-label {
+    color: #f87171;
+    font-size: 12px;
+    font-weight: 600;
+}
+

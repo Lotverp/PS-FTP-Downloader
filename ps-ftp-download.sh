@@ -12,9 +12,11 @@
 #  Install: sudo apt install wget curl pv
 # ─────────────────────────────────────────────────────────────────
 
-FTP_HOST="192.168.1.111"
-FTP_PORT="2121"
-FTP_DIR="data/pkg"
+FTP_HOST="${FTP_HOST:-192.168.1.195}"
+FTP_PORT="${FTP_PORT:-2121}"
+FTP_DIR="${FTP_DIR:-data/pkg}"
+FTP_DIR="${FTP_DIR#/}"
+FTP_DIR="${FTP_DIR%/}"
 
 BOLD="\033[1m"
 CYAN="\033[1;36m"
@@ -46,6 +48,16 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     echo -e "${YELLOW}  Install with: sudo apt install ${MISSING[*]}${RESET}"
     exit 1
 fi
+
+# Automatically ensure remote FTP folder exists on PS
+echo -e "${DIM}  Connecting to PS FTP (ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/)...${RESET}"
+if curl -s --connect-timeout 4 -m 8 -u "anonymous:anonymous@" --ftp-create-dirs "ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/" -o /dev/null; then
+    echo -e "  ${GREEN}[OK] Connected to PS — Directory '${FTP_DIR}' verified and ready!${RESET}"
+else
+    echo -e "  ${YELLOW}[Warn] Could not verify/create ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${RESET}"
+    echo -e "  ${DIM}  (Make sure GoldHEN / FTP is enabled on the console)${RESET}"
+fi
+echo ""
 
 echo -e "${BOLD}File URL to download to PS:${RESET}"
 read -rp "  -> " DOWNLOAD_URL
@@ -109,6 +121,11 @@ else
     DEST_FILENAME="${BASE_NAME}"
 fi
 
+# Ensure FTP_DIR has no leading/trailing slashes and defaults to data/pkg
+FTP_DIR="${FTP_DIR#/}"
+FTP_DIR="${FTP_DIR%/}"
+FTP_DIR="${FTP_DIR:-data/pkg}"
+
 FTP_URL="ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${DEST_FILENAME}"
 
 echo ""
@@ -132,11 +149,11 @@ echo ""
 if [[ -n "$FILE_SIZE" ]]; then
     wget -q -O - "$DOWNLOAD_URL" 2>/dev/null \
         | pv -s "$FILE_SIZE" -petrab \
-        | curl --silent --show-error -T - "${FTP_URL}"
+        | curl --silent --show-error --ftp-create-dirs -T - "${FTP_URL}"
 else
     wget -q -O - "$DOWNLOAD_URL" 2>/dev/null \
         | pv -petrab \
-        | curl --silent --show-error -T - "${FTP_URL}"
+        | curl --silent --show-error --ftp-create-dirs -T - "${FTP_URL}"
 fi
 
 EXIT_CODE=$?

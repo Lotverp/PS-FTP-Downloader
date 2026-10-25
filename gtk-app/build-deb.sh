@@ -14,7 +14,7 @@ PKG_VERSION="1.2.9"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
 PKG_DESCRIPTION="Download PKG directly from the network to PS via FTP — with split-archive support"
-PKG_DEPENDS="libgtk-4-1, libcurl4, 7zip | p7zip-full | unrar"
+PKG_DEPENDS="libgtk-4-1, libcurl4 | libcurl4t64, 7zip | p7zip-full | unrar"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/../.deb-build"

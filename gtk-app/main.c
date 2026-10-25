@@ -40,7 +40,7 @@
 #define APP_VERSION      "1.2.9"
 #define APP_GITHUB_URL   "https://github.com/Lotverp/PS-FTP-Downloader"
 
-#define FTP_HOST_DEFAULT "192.168.1.111"
+#define FTP_HOST_DEFAULT "192.168.1.195"
 #define FTP_PORT_DEFAULT  2121
 #define FTP_DIR_DEFAULT  "data/pkg"
 #define FTP_USER_DEFAULT "anonymous"
@@ -185,6 +185,7 @@ static char g_saved_passwords[1024] = "SuperPSX,DLPSGAME.COM";
 static GtkWidget *g_window;
 static GtkWidget *g_list_box;
 static GtkWidget *g_lbl_stats;
+static GtkWidget *g_lbl_sub;
 static GtkWidget *g_stack;
 
 /* Dialog entry refs (valid only while the respective dialog is open). */
@@ -834,9 +835,301 @@ static int xfer_progress_cb(void *clientp,
  *   5. Cleanup and post final status
  * ═══════════════════════════════════════════════════════════ */
 
+/* Build clean FTP URL preserving path slashes (e.g. data/pkg) and escaping components.
+   Ensures missing subdirectories like 'pkg' can be created automatically by libcurl. */
+static void build_ftp_url(char *out, size_t out_sz,
+                          const char *host, int port,
+                          const char *dir, const char *filename) {
+    if (!out || out_sz == 0) return;
+    out[0] = '\0';
+
+    CURL *esc_c = curl_easy_init();
+    const char *use_dir = (dir && dir[0]) ? dir : FTP_DIR_DEFAULT;
+
+    /* Trim leading slashes from use_dir */
+    while (*use_dir == '/') use_dir++;
+
+    /* Copy and trim trailing slashes */
+    char dir_copy[1024];
+    strncpy(dir_copy, use_dir, sizeof(dir_copy) - 1);
+    dir_copy[sizeof(dir_copy) - 1] = '\0';
+
+    size_t dlen = strlen(dir_copy);
+    while (dlen > 0 && dir_copy[dlen - 1] == '/') {
+        dir_copy[--dlen] = '\0';
+    }
+
+    char clean_dir[2048] = "";
+    char *saveptr = NULL;
+    char *token = strtok_r(dir_copy, "/", &saveptr);
+    gboolean first = TRUE;
+
+    while (token) {
+        char *esc_tok = esc_c ? curl_easy_escape(esc_c, token, 0) : NULL;
+        if (!first) {
+            strncat(clean_dir, "/", sizeof(clean_dir) - strlen(clean_dir) - 1);
+        }
+        strncat(clean_dir, esc_tok ? esc_tok : token, sizeof(clean_dir) - strlen(clean_dir) - 1);
+        if (esc_tok) curl_free(esc_tok);
+        first = FALSE;
+        token = strtok_r(NULL, "/", &saveptr);
+    }
+
+    if (clean_dir[0] == '\0') {
+        strncpy(clean_dir, "data/pkg", sizeof(clean_dir) - 1);
+    }
+
+    char *esc_name = (esc_c && filename) ? curl_easy_escape(esc_c, filename, 0) : NULL;
+
+    if (filename && filename[0]) {
+        snprintf(out, out_sz, "ftp://%s:%d/%s/%s",
+                 host, port, clean_dir, esc_name ? esc_name : filename);
+    } else {
+        snprintf(out, out_sz, "ftp://%s:%d/%s/",
+                 host, port, clean_dir);
+    }
+
+    if (esc_name) curl_free(esc_name);
+    if (esc_c) curl_easy_cleanup(esc_c);
+}
+
+/* ═══════════════════════════════════════════════════════════
+ * Settings persistence & Remote Directory Management
+ * ═══════════════════════════════════════════════════════════ */
+
+static char *get_config_path(void) {
+    const char *config_dir = g_get_user_config_dir();
+    char *dir = g_build_filename(config_dir, "ps-ftp-downloader", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    char *file = g_build_filename(dir, "settings.ini", NULL);
+    g_free(dir);
+    return file;
+}
+
+static void save_settings(void);
+
+static void load_settings(void) {
+    char *path = get_config_path();
+    GKeyFile *kf = g_key_file_new();
+    if (g_key_file_load_from_file(kf, path, G_KEY_FILE_NONE, NULL)) {
+        char *host = g_key_file_get_string(kf, "FTP", "host", NULL);
+        if (host && host[0]) {
+            strncpy(g_ftp_host, host, sizeof(g_ftp_host) - 1);
+            g_free(host);
+        }
+        int port = g_key_file_get_integer(kf, "FTP", "port", NULL);
+        if (port > 0) g_ftp_port = port;
+
+        char *dir = g_key_file_get_string(kf, "FTP", "dir", NULL);
+        if (dir && dir[0]) {
+            strncpy(g_ftp_dir, dir, sizeof(g_ftp_dir) - 1);
+            g_free(dir);
+        }
+        char *user = g_key_file_get_string(kf, "FTP", "user", NULL);
+        if (user && user[0]) {
+            strncpy(g_ftp_user, user, sizeof(g_ftp_user) - 1);
+            g_free(user);
+        }
+        char *pass = g_key_file_get_string(kf, "FTP", "pass", NULL);
+        if (pass && pass[0]) {
+            strncpy(g_ftp_pass, pass, sizeof(g_ftp_pass) - 1);
+            g_free(pass);
+        }
+        char *tmp = g_key_file_get_string(kf, "General", "tmp_dir", NULL);
+        if (tmp && tmp[0]) {
+            strncpy(g_tmp_dir, tmp, sizeof(g_tmp_dir) - 1);
+            g_free(tmp);
+        }
+        char *saved_pass = g_key_file_get_string(kf, "General", "saved_passwords", NULL);
+        if (saved_pass && saved_pass[0]) {
+            strncpy(g_saved_passwords, saved_pass, sizeof(g_saved_passwords) - 1);
+            g_free(saved_pass);
+        }
+    } else {
+        save_settings();
+    }
+    g_key_file_free(kf);
+    g_free(path);
+}
+
+static void save_settings(void) {
+    char *path = get_config_path();
+    GKeyFile *kf = g_key_file_new();
+    g_key_file_set_string(kf, "FTP", "host", g_ftp_host);
+    g_key_file_set_integer(kf, "FTP", "port", g_ftp_port);
+    g_key_file_set_string(kf, "FTP", "dir", g_ftp_dir);
+    g_key_file_set_string(kf, "FTP", "user", g_ftp_user);
+    g_key_file_set_string(kf, "FTP", "pass", g_ftp_pass);
+    g_key_file_set_string(kf, "General", "tmp_dir", g_tmp_dir);
+    g_key_file_set_string(kf, "General", "saved_passwords", g_saved_passwords);
+
+    g_key_file_save_to_file(kf, path, NULL);
+    g_key_file_free(kf);
+    g_free(path);
+}
+
+/* Ensure the target directory structure exists on the FTP server (e.g. /data/pkg)
+   by sequentially checking/creating each path segment. */
+static gboolean ftp_ensure_dir(const char *host, int port,
+                               const char *user, const char *pass,
+                               const char *dir, char *err_buf, size_t err_sz) {
+    if (!host || !host[0]) {
+        if (err_buf && err_sz > 0) snprintf(err_buf, err_sz, "Host FTP non configurato");
+        return FALSE;
+    }
+    const char *target_dir = (dir && dir[0]) ? dir : FTP_DIR_DEFAULT;
+
+    /* Trim leading slashes */
+    while (*target_dir == '/') target_dir++;
+
+    char dir_copy[512];
+    strncpy(dir_copy, target_dir, sizeof(dir_copy) - 1);
+    dir_copy[sizeof(dir_copy) - 1] = '\0';
+    size_t dlen = strlen(dir_copy);
+    while (dlen > 0 && dir_copy[dlen - 1] == '/') dir_copy[--dlen] = '\0';
+
+    char full_dir[512];
+    strncpy(full_dir, dir_copy, sizeof(full_dir) - 1);
+    full_dir[sizeof(full_dir) - 1] = '\0';
+
+    CURL *c = curl_easy_init();
+    if (!c) {
+        if (err_buf && err_sz > 0) snprintf(err_buf, err_sz, "Impossibile inizializzare cURL");
+        return FALSE;
+    }
+
+    char url[512];
+    snprintf(url, sizeof(url), "ftp://%s:%d/", host, port);
+
+    struct curl_slist *quotes = NULL;
+    char *saveptr = NULL;
+    char *tok = strtok_r(dir_copy, "/", &saveptr);
+    while (tok) {
+        char mkd_cmd[512];
+        char cwd_cmd[512];
+        snprintf(mkd_cmd, sizeof(mkd_cmd), "*MKD %s", tok);
+        snprintf(cwd_cmd, sizeof(cwd_cmd), "*CWD %s", tok);
+        quotes = curl_slist_append(quotes, mkd_cmd);
+        quotes = curl_slist_append(quotes, cwd_cmd);
+        tok = strtok_r(NULL, "/", &saveptr);
+    }
+
+    CURL_SET(c, CURLOPT_NOSIGNAL, 1L);
+    CURL_SET(c, CURLOPT_URL, url);
+    CURL_SET(c, CURLOPT_USERNAME, (user && user[0]) ? user : FTP_USER_DEFAULT);
+    CURL_SET(c, CURLOPT_PASSWORD, (pass && pass[0]) ? pass : FTP_PASS_DEFAULT);
+    CURL_SET(c, CURLOPT_QUOTE, quotes);
+    CURL_SET(c, CURLOPT_NOBODY, 1L);
+    CURL_SET(c, CURLOPT_CONNECTTIMEOUT, 4L);
+    CURL_SET(c, CURLOPT_TIMEOUT, 6L);
+
+    CURLcode res = curl_easy_perform(c);
+    gboolean ok = (res == CURLE_OK);
+
+    if (err_buf && err_sz > 0) {
+        if (ok) {
+            snprintf(err_buf, err_sz, "Connessione riuscita! Cartella /%s pronta.", full_dir);
+        } else {
+            snprintf(err_buf, err_sz, "Errore FTP (%d): %s", res, curl_easy_strerror(res));
+        }
+    }
+
+    curl_slist_free_all(quotes);
+    curl_easy_cleanup(c);
+    return ok;
+}
+
+static void *ftp_ensure_dir_bg_thread(void *arg) {
+    (void)arg;
+    ftp_ensure_dir(g_ftp_host, g_ftp_port, g_ftp_user, g_ftp_pass, g_ftp_dir, NULL, 0);
+    return NULL;
+}
+
+static void trigger_ftp_ensure_dir_async(void) {
+    pthread_t th;
+    if (pthread_create(&th, NULL, ftp_ensure_dir_bg_thread, NULL) == 0) {
+        pthread_detach(th);
+    }
+}
+
+typedef struct {
+    char host[256];
+    int port;
+    char dir[512];
+    char user[256];
+    char pass[256];
+    GtkWidget *lbl_result;
+    GtkWidget *btn;
+} TestFtpData;
+
+static gboolean on_test_done_idle(gpointer user_data) {
+    struct { gboolean ok; char msg[512]; GtkWidget *lbl; GtkWidget *btn; } *res = user_data;
+    if (res->lbl && GTK_IS_WIDGET(res->lbl)) {
+        gtk_label_set_text(GTK_LABEL(res->lbl), res->msg);
+        if (res->ok) {
+            gtk_widget_remove_css_class(res->lbl, "error-label");
+            gtk_widget_add_css_class(res->lbl, "success-label");
+        } else {
+            gtk_widget_remove_css_class(res->lbl, "success-label");
+            gtk_widget_add_css_class(res->lbl, "error-label");
+        }
+    }
+    if (res->btn && GTK_IS_WIDGET(res->btn)) {
+        gtk_widget_set_sensitive(res->btn, TRUE);
+    }
+    free(res);
+    return G_SOURCE_REMOVE;
+}
+
+static void *test_ftp_worker(void *arg) {
+    TestFtpData *data = (TestFtpData *)arg;
+    char err[512] = "";
+    gboolean ok = ftp_ensure_dir(data->host, data->port, data->user, data->pass, data->dir, err, sizeof(err));
+
+    struct { gboolean ok; char msg[512]; GtkWidget *lbl; GtkWidget *btn; } *res = malloc(sizeof(*res));
+    res->ok = ok;
+    strncpy(res->msg, err, sizeof(res->msg) - 1);
+    res->lbl = data->lbl_result;
+    res->btn = data->btn;
+    g_idle_add(on_test_done_idle, res);
+
+    free(data);
+    return NULL;
+}
+
+static void on_test_clicked(GtkButton *btn, gpointer user_data) {
+    GtkWidget *lbl_result = GTK_WIDGET(user_data);
+    const char *h = gtk_editable_get_text(GTK_EDITABLE(g_set_host));
+    const char *p = gtk_editable_get_text(GTK_EDITABLE(g_set_port));
+    const char *d = gtk_editable_get_text(GTK_EDITABLE(g_set_dir));
+    const char *u = gtk_editable_get_text(GTK_EDITABLE(g_set_user));
+    const char *pass = gtk_editable_get_text(GTK_EDITABLE(g_set_pass));
+
+    gtk_widget_set_sensitive(GTK_WIDGET(btn), FALSE);
+    gtk_label_set_text(GTK_LABEL(lbl_result), "Connessione in corso a PS FTP...");
+    gtk_widget_remove_css_class(lbl_result, "success-label");
+    gtk_widget_remove_css_class(lbl_result, "error-label");
+
+    TestFtpData *td = malloc(sizeof(TestFtpData));
+    strncpy(td->host, (h && h[0]) ? h : g_ftp_host, sizeof(td->host) - 1);
+    td->port = (p && atoi(p) > 0) ? atoi(p) : g_ftp_port;
+    strncpy(td->dir, (d && d[0]) ? d : g_ftp_dir, sizeof(td->dir) - 1);
+    strncpy(td->user, (u && u[0]) ? u : g_ftp_user, sizeof(td->user) - 1);
+    strncpy(td->pass, (pass && pass[0]) ? pass : g_ftp_pass, sizeof(td->pass) - 1);
+    td->lbl_result = lbl_result;
+    td->btn = GTK_WIDGET(btn);
+
+    pthread_t th;
+    pthread_create(&th, NULL, test_ftp_worker, td);
+    pthread_detach(th);
+}
+
 static void *download_thread_fn_internal(void *arg) {
     Download *dl = (Download *)arg;
     dl->request_stop = STOP_NONE;
+
+    /* Ensure target remote folder exists on PS4 */
+    ftp_ensure_dir(g_ftp_host, g_ftp_port, g_ftp_user, g_ftp_pass, g_ftp_dir, NULL, 0);
 
     /* ── Step 1: HTTP HEAD — get content length ── */
     dl->status = DL_PROBING;
@@ -884,16 +1177,7 @@ static void *download_thread_fn_internal(void *arg) {
 
     /* ── Step 2: FTP SIZE probe — find resume offset ── */
     char ftp_url[2048];
-    {
-        CURL *esc_c = curl_easy_init();
-        char *esc_dir = curl_easy_escape(esc_c, g_ftp_dir, 0);
-        char *esc_name = curl_easy_escape(esc_c, dl->dest_name, 0);
-        snprintf(ftp_url, sizeof(ftp_url), "ftp://%s:%d/%s/%s",
-                 g_ftp_host, g_ftp_port, esc_dir ? esc_dir : g_ftp_dir, esc_name ? esc_name : dl->dest_name);
-        if(esc_dir) curl_free(esc_dir);
-        if(esc_name) curl_free(esc_name);
-        curl_easy_cleanup(esc_c);
-    }
+    build_ftp_url(ftp_url, sizeof(ftp_url), g_ftp_host, g_ftp_port, g_ftp_dir, dl->dest_name);
 
     {
         curl_off_t remote_size = 0;
@@ -967,7 +1251,8 @@ static void *download_thread_fn_internal(void *arg) {
         CURL_SET(ftp, CURLOPT_XFERINFOFUNCTION,         xfer_progress_cb);
         CURL_SET(ftp, CURLOPT_XFERINFODATA,             dl);
         CURL_SET(ftp, CURLOPT_NOPROGRESS,               0L);
-        CURL_SET(ftp, CURLOPT_FTP_CREATE_MISSING_DIRS,  1L);
+        CURL_SET(ftp, CURLOPT_FTP_CREATE_MISSING_DIRS,  (long)CURLFTP_CREATE_DIR_RETRY);
+        CURL_SET(ftp, CURLOPT_FTP_FILEMETHOD,           (long)CURLFTPMETHOD_MULTICWD);
         CURL_SET(ftp, CURLOPT_CONNECTTIMEOUT,           30L);
 
         if (dl->resume_offset > 0)
@@ -1600,6 +1885,9 @@ static void *split_archive_thread_fn_internal(void *arg) {
 
     if (!dl) { free(sa); return NULL; }
 
+    /* Ensure target remote folder exists on PS4 */
+    ftp_ensure_dir(g_ftp_host, g_ftp_port, g_ftp_user, g_ftp_pass, g_ftp_dir, NULL, 0);
+
     /* ────────────────────────────────────────────────────────
      * Phase 1: create temp directory
      * ──────────────────────────────────────────────────────── */
@@ -1821,16 +2109,7 @@ static void *split_archive_thread_fn_internal(void *arg) {
 
     /* Build FTP destination URL. */
     char ftp_url[2048];
-    {
-        CURL *esc_c = curl_easy_init();
-        char *esc_dir = curl_easy_escape(esc_c, g_ftp_dir, 0);
-        char *esc_name = curl_easy_escape(esc_c, sa->pkg_name, 0);
-        snprintf(ftp_url, sizeof(ftp_url), "ftp://%s:%d/%s/%s",
-                 g_ftp_host, g_ftp_port, esc_dir ? esc_dir : g_ftp_dir, esc_name ? esc_name : sa->pkg_name);
-        if(esc_dir) curl_free(esc_dir);
-        if(esc_name) curl_free(esc_name);
-        curl_easy_cleanup(esc_c);
-    }
+    build_ftp_url(ftp_url, sizeof(ftp_url), g_ftp_host, g_ftp_port, g_ftp_dir, sa->pkg_name);
 
     /* Reuse the xfer_progress_cb; it reads dl->resume_offset + ulnow. */
     CURL *ftp = curl_easy_init();
@@ -1845,7 +2124,8 @@ static void *split_archive_thread_fn_internal(void *arg) {
     CURL_SET(ftp, CURLOPT_XFERINFOFUNCTION,         xfer_progress_cb);
     CURL_SET(ftp, CURLOPT_XFERINFODATA,             dl);
     CURL_SET(ftp, CURLOPT_NOPROGRESS,               0L);
-    CURL_SET(ftp, CURLOPT_FTP_CREATE_MISSING_DIRS,  1L);
+    CURL_SET(ftp, CURLOPT_FTP_CREATE_MISSING_DIRS,  (long)CURLFTP_CREATE_DIR_RETRY);
+    CURL_SET(ftp, CURLOPT_FTP_FILEMETHOD,           (long)CURLFTPMETHOD_MULTICWD);
     CURL_SET(ftp, CURLOPT_CONNECTTIMEOUT,           30L);
 
     CURLcode ftp_res = curl_easy_perform(ftp);
@@ -2138,6 +2418,8 @@ static void on_add_dialog_response(GtkDialog *dialog, int response,
     gtk_list_box_append(GTK_LIST_BOX(g_list_box), row);
     update_stats();
 
+    trigger_ftp_ensure_dir_async();
+
     if (strcasecmp(det_ext, "rar") == 0 || strcasecmp(det_ext, "zip") == 0 || strcasecmp(det_ext, "7z") == 0) {
         SplitArchiveArgs *sa = calloc(1, sizeof(SplitArchiveArgs));
         sa->n_urls = 1;
@@ -2309,7 +2591,19 @@ static void on_settings_response(GtkDialog *dialog, int response,
 
         if (host && host[0]) strncpy(g_ftp_host, host, sizeof(g_ftp_host) - 1);
         if (port && atoi(port) > 0) g_ftp_port = atoi(port);
-        if (dir  && dir[0])  strncpy(g_ftp_dir,  dir,  sizeof(g_ftp_dir)  - 1);
+        if (dir && dir[0]) {
+            const char *d = dir;
+            while (*d == '/') d++;
+            char buf[sizeof(g_ftp_dir)];
+            strncpy(buf, d, sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+            size_t blen = strlen(buf);
+            while (blen > 0 && buf[blen - 1] == '/') buf[--blen] = '\0';
+            if (buf[0])
+                strncpy(g_ftp_dir, buf, sizeof(g_ftp_dir) - 1);
+            else
+                strncpy(g_ftp_dir, FTP_DIR_DEFAULT, sizeof(g_ftp_dir) - 1);
+        }
 
         strncpy(g_ftp_user,
                 (user && user[0]) ? user : FTP_USER_DEFAULT,
@@ -2319,6 +2613,16 @@ static void on_settings_response(GtkDialog *dialog, int response,
                 sizeof(g_ftp_pass) - 1);
         if (tmp && tmp[0]) strncpy(g_tmp_dir, tmp, sizeof(g_tmp_dir) - 1);
         if (saved_pass) strncpy(g_saved_passwords, saved_pass, sizeof(g_saved_passwords) - 1);
+
+        save_settings();
+
+        if (g_lbl_sub && GTK_IS_WIDGET(g_lbl_sub)) {
+            char sub[256];
+            snprintf(sub, sizeof(sub), "ftp://%s:%d/%s", g_ftp_host, g_ftp_port, g_ftp_dir);
+            gtk_label_set_text(GTK_LABEL(g_lbl_sub), sub);
+        }
+
+        trigger_ftp_ensure_dir_async();
     }
     gtk_window_destroy(GTK_WINDOW(dialog));
 }
@@ -2371,6 +2675,18 @@ static void show_settings_dialog(GtkWindow *parent) {
         gtk_box_append(GTK_BOX(form), lbl);
         gtk_box_append(GTK_BOX(form), *fields[i].entry);
     }
+
+    /* Test Connection button and status feedback */
+    GtkWidget *btn_test = gtk_button_new_with_label("Test Connessione & Crea Cartella");
+    gtk_widget_add_css_class(btn_test, "btn-settings");
+    gtk_widget_set_margin_top(btn_test, 4);
+
+    GtkWidget *lbl_test_result = gtk_label_new("");
+    gtk_label_set_xalign(GTK_LABEL(lbl_test_result), 0.0);
+    g_signal_connect(btn_test, "clicked", G_CALLBACK(on_test_clicked), lbl_test_result);
+
+    gtk_box_append(GTK_BOX(form), btn_test);
+    gtk_box_append(GTK_BOX(form), lbl_test_result);
 
     gtk_box_append(GTK_BOX(content), form);
 
@@ -2496,6 +2812,8 @@ G_GNUC_END_IGNORE_DEPRECATIONS
     GtkWidget *row = create_download_row(dl);
     gtk_list_box_append(GTK_LIST_BOX(g_list_box), row);
     update_stats();
+
+    trigger_ftp_ensure_dir_async();
 
     pthread_create(&dl->thread, NULL, split_archive_thread_fn, sa);
     pthread_detach(dl->thread);
@@ -2688,6 +3006,8 @@ static void on_github_clicked(GtkButton *btn, gpointer user_data) {
 static void activate(GtkApplication *app, gpointer user_data) {
     (void)user_data;
     load_css();
+    load_settings();
+    trigger_ftp_ensure_dir_async();
 
     g_window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(g_window), "PS FTP Downloader");
@@ -2742,12 +3062,12 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
     char sub[256];
     snprintf(sub, sizeof(sub), "ftp://%s:%d/%s", g_ftp_host, g_ftp_port, g_ftp_dir);
-    GtkWidget *lbl_sub = gtk_label_new(sub);
-    gtk_widget_add_css_class(lbl_sub, "app-subtitle");
-    gtk_label_set_xalign(GTK_LABEL(lbl_sub), 0.0);
+    g_lbl_sub = gtk_label_new(sub);
+    gtk_widget_add_css_class(g_lbl_sub, "app-subtitle");
+    gtk_label_set_xalign(GTK_LABEL(g_lbl_sub), 0.0);
 
     gtk_box_append(GTK_BOX(title_col), title_row);
-    gtk_box_append(GTK_BOX(title_col), lbl_sub);
+    gtk_box_append(GTK_BOX(title_col), g_lbl_sub);
 
     /* Spacer pushes the action buttons to the right edge. */
     GtkWidget *spacer = gtk_label_new("");

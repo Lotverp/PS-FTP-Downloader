@@ -15,7 +15,7 @@ DATADIR        = $(PREFIX)/share/$(TARGET)
 APPDIR         = $(PREFIX)/share/applications
 PIXMAPSDIR     = $(PREFIX)/share/pixmaps
 
-.PHONY: all clean install uninstall deb run
+.PHONY: all clean install uninstall deb deb-install run
 
 all: $(TARGET)
 
@@ -49,6 +49,9 @@ uninstall:
 deb: all
 	chmod +x build-deb.sh
 	./build-deb.sh
+
+deb-install: deb
+	pkexec apt-get install -y --reinstall $$(realpath ../$(TARGET)_$(VERSION)_$(ARCH).deb)
 
 clean:
 	rm -f $(TARGET)
