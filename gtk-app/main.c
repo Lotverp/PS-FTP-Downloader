@@ -231,6 +231,8 @@ static void trigger_catalog_fetch_async(void);
 typedef struct AutoSession AutoSession;
 static gboolean is_uc_resolver_available(void);
 static void trigger_uc_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
+static void trigger_mediafire_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
+static void trigger_onefichier_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
 static void trigger_dlps_fetch(const char *query, int page);
 
 /* ═══════════════════════════════════════════════════════════
@@ -2952,6 +2954,22 @@ G_GNUC_END_IGNORE_DEPRECATIONS
             trigger_dlps_fetch(url, 1);
             show_toast("Apertura gioco da DLPSGame...");
         }
+        if (pass) g_free(pass);
+        g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
+        gtk_window_destroy(GTK_WINDOW(dialog));
+        return;
+    }
+
+    if (strstr(url, "mediafire.com/file/")) {
+        trigger_mediafire_resolve(url, (name && name[0]) ? name : "Download", pass, NULL, NULL);
+        if (pass) g_free(pass);
+        g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
+        gtk_window_destroy(GTK_WINDOW(dialog));
+        return;
+    }
+
+    if (strstr(url, "1fichier.com/")) {
+        trigger_onefichier_resolve(url, (name && name[0]) ? name : "Download", pass, NULL, NULL);
         if (pass) g_free(pass);
         g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
         gtk_window_destroy(GTK_WINDOW(dialog));
@@ -6042,6 +6060,146 @@ static void on_dlps_mediafire_clicked(GtkButton *btn, gpointer user_data) {
     free(d);
 }
 
+/* 1Fichier Background Resolver */
+typedef struct {
+    int success;
+    char direct_url[2048];
+    char game_title[256];
+    char password[128];
+    char wait_msg[128];
+    GtkWidget *dialog;
+    AutoSession *sess;
+} OneFichierRes;
+
+static gboolean on_onefichier_resolved_idle(gpointer user_data) {
+    OneFichierRes *res = (OneFichierRes *)user_data;
+    if (res->success && res->direct_url[0]) {
+        if (res->dialog && GTK_IS_WINDOW(res->dialog)) {
+            gtk_window_destroy(GTK_WINDOW(res->dialog));
+        }
+        char dest_name[256];
+        snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+        show_toast("Link 1Fichier risolto: download avviato verso la PS!");
+        start_single_download(res->direct_url, dest_name, res->password);
+        if (g_stack) gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "list");
+        auto_session_free(res->sess);
+    } else if (res->sess) {
+        if (res->wait_msg[0]) {
+            char buf[200];
+            snprintf(buf, sizeof(buf), "1Fichier (%s): provo link successivo...", res->wait_msg);
+            show_prep_progress(buf);
+        } else {
+            show_prep_progress("1Fichier non disponibile: provo link successivo...");
+        }
+        auto_session_next(res->sess);
+    } else {
+        if (res->wait_msg[0]) {
+            char buf[200];
+            snprintf(buf, sizeof(buf), "1Fichier: %s. Riprova tra poco o usa Real-Debrid.", res->wait_msg);
+            show_toast(buf);
+        } else {
+            show_toast("Impossibile risolvere il link 1Fichier.");
+        }
+    }
+    free(res);
+    return G_SOURCE_REMOVE;
+}
+
+static void *onefichier_resolve_thread(void *arg) {
+    DlpsActionData *req = (DlpsActionData *)arg;
+    OneFichierRes *res = calloc(1, sizeof(OneFichierRes));
+    strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
+    strncpy(res->password, req->password, sizeof(res->password) - 1);
+    res->dialog = req->dialog;
+    res->sess = req->sess;
+
+    CURL *c = curl_easy_init();
+    if (c) {
+        DlpsMem chunk = { malloc(1), 0 };
+        if (chunk.data) chunk.data[0] = '\0';
+        curl_easy_setopt(c, CURLOPT_URL, req->url);
+        curl_easy_setopt(c, CURLOPT_POSTFIELDS, "submitz=1");
+        curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
+        curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
+        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+        CURLcode cres = curl_easy_perform(c);
+        curl_easy_cleanup(c);
+
+        if (cres == CURLE_OK && chunk.data) {
+            GRegex *re = g_regex_new("href=[\"'](https?://[a-zA-Z0-9.-]*1fichier\\.com/[^\\s\"']+)[\"'][^>]*class=[\"'][^\"']*\\bok\\b", 0, 0, NULL);
+            GMatchInfo *info = NULL;
+            if (g_regex_match(re, chunk.data, 0, &info)) {
+                char *u = g_match_info_fetch(info, 1);
+                if (u) {
+                    strncpy(res->direct_url, u, sizeof(res->direct_url) - 1);
+                    res->success = 1;
+                    g_free(u);
+                }
+            } else {
+                g_regex_unref(re);
+                re = g_regex_new("class=[\"'][^\"']*\\bok\\b[^>]*href=[\"'](https?://[a-zA-Z0-9.-]*1fichier\\.com/[^\\s\"']+)[\"']", 0, 0, NULL);
+                if (g_regex_match(re, chunk.data, 0, &info)) {
+                    char *u = g_match_info_fetch(info, 1);
+                    if (u) {
+                        strncpy(res->direct_url, u, sizeof(res->direct_url) - 1);
+                        res->success = 1;
+                        g_free(u);
+                    }
+                }
+            }
+            g_match_info_free(info);
+            g_regex_unref(re);
+
+            if (!res->success) {
+                GRegex *w_re = g_regex_new("You must wait (\\d+\\s*\\w+)", G_REGEX_CASELESS, 0, NULL);
+                GMatchInfo *w_info = NULL;
+                if (g_regex_match(w_re, chunk.data, 0, &w_info)) {
+                    char *w = g_match_info_fetch(w_info, 0);
+                    if (w) {
+                        strncpy(res->wait_msg, w, sizeof(res->wait_msg) - 1);
+                        g_free(w);
+                    }
+                }
+                g_match_info_free(w_info);
+                g_regex_unref(w_re);
+            }
+            free(chunk.data);
+        }
+    }
+    free(req);
+    g_idle_add(on_onefichier_resolved_idle, res);
+    return NULL;
+}
+
+static void trigger_onefichier_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess) {
+    show_prep_progress("Risoluzione link diretto 1Fichier in corso...");
+    DlpsActionData *req = calloc(1, sizeof(DlpsActionData));
+    strncpy(req->url, url, sizeof(req->url) - 1);
+    strncpy(req->game_title, game_title, sizeof(req->game_title) - 1);
+    strncpy(req->password, password ? password : "", sizeof(req->password) - 1);
+    req->dialog = dialog;
+    req->sess = sess;
+
+    pthread_t th;
+    if (pthread_create(&th, NULL, onefichier_resolve_thread, req) == 0) {
+        pthread_detach(th);
+    } else {
+        free(req);
+        show_toast("Errore creazione thread risolutore 1Fichier");
+        if (sess) auto_session_next(sess);
+    }
+}
+
+static void on_dlps_onefichier_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    DlpsActionData *d = (DlpsActionData *)user_data;
+    trigger_onefichier_resolve(d->url, d->game_title, d->password, d->dialog, NULL);
+    free(d);
+}
+
 /* Real-Debrid Background Resolver */
 typedef struct {
     int success;
@@ -6398,6 +6556,11 @@ static gboolean dlps_dispatch_link(const char *url, const char *title,
         return TRUE;
     }
 
+    if (strstr(url, "1fichier.com/")) {
+        trigger_onefichier_resolve(url, title, pass, NULL, sess);
+        return TRUE;
+    }
+
     if (url_looks_direct_file(url)) {
         char dest_name[256];
         snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", title);
@@ -6508,7 +6671,9 @@ static int link_auto_rank(const DlpsLink *l) {
     switch (l->type) {
         case DLPS_LINK_DIRECT_PKG: return 0;
         case DLPS_LINK_MEDIAFIRE:  return 1;
-        case DLPS_LINK_HOSTER:     return g_realdebrid_token[0] ? 2 : 5;
+        case DLPS_LINK_HOSTER:
+            if (strstr(l->url, "1fichier.com")) return 1;
+            return g_realdebrid_token[0] ? 2 : 5;
         case DLPS_LINK_PROTECTOR:  return 4;
         default:                   return 9;
     }
@@ -6697,6 +6862,12 @@ static void on_start_direct_dl_clicked(GtkButton *btn, gpointer user_data) {
 
         if (strstr(url, "mediafire.com/file/")) {
             trigger_mediafire_resolve(url, data->game_title, data->password, data->dialog, NULL);
+            free(data);
+            return;
+        }
+
+        if (strstr(url, "1fichier.com/")) {
+            trigger_onefichier_resolve(url, data->game_title, data->password, data->dialog, NULL);
             free(data);
             return;
         }
@@ -6911,6 +7082,38 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             gtk_box_append(GTK_BOX(row), btn_mf);
 
             GtkWidget *btn_wb = gtk_button_new_with_label("Apri nel Browser");
+            gtk_widget_add_css_class(btn_wb, "btn-browser");
+            gtk_widget_set_focusable(btn_wb, FALSE);
+            g_signal_connect(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->links[i].url);
+            gtk_box_append(GTK_BOX(row), btn_wb);
+        } else if (strstr(game->links[i].url, "1fichier.com")) {
+            DlpsActionData *ofd = malloc(sizeof(DlpsActionData));
+            strncpy(ofd->url, game->links[i].url, sizeof(ofd->url) - 1);
+            strncpy(ofd->game_title, game->title, sizeof(ofd->game_title) - 1);
+            strncpy(ofd->password, game->password, sizeof(ofd->password) - 1);
+            ofd->dialog = dialog;
+
+            GtkWidget *btn_1f = gtk_button_new_with_label("Risolvi 1Fichier");
+            gtk_widget_add_css_class(btn_1f, "btn-resolve");
+            gtk_widget_set_focusable(btn_1f, FALSE);
+            g_signal_connect(btn_1f, "clicked", G_CALLBACK(on_dlps_onefichier_clicked), ofd);
+            gtk_box_append(GTK_BOX(row), btn_1f);
+
+            if (g_realdebrid_token[0]) {
+                DlpsActionData *rdd = malloc(sizeof(DlpsActionData));
+                strncpy(rdd->url, game->links[i].url, sizeof(rdd->url) - 1);
+                strncpy(rdd->game_title, game->title, sizeof(rdd->game_title) - 1);
+                strncpy(rdd->password, game->password, sizeof(rdd->password) - 1);
+                rdd->dialog = dialog;
+
+                GtkWidget *btn_rd = gtk_button_new_with_label("Debrid 1-Click");
+                gtk_widget_add_css_class(btn_rd, "btn-debrid");
+                gtk_widget_set_focusable(btn_rd, FALSE);
+                g_signal_connect(btn_rd, "clicked", G_CALLBACK(on_dlps_realdebrid_clicked), rdd);
+                gtk_box_append(GTK_BOX(row), btn_rd);
+            }
+
+            GtkWidget *btn_wb = gtk_button_new_with_label("Apri Pagina");
             gtk_widget_add_css_class(btn_wb, "btn-browser");
             gtk_widget_set_focusable(btn_wb, FALSE);
             g_signal_connect(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->links[i].url);
