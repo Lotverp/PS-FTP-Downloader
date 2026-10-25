@@ -561,8 +561,9 @@ popover listview > row label selection {
 .status-badge {
     font-size: 10px;
     font-weight: 700;
-    letter-spacing: 0.8px;
-    padding: 3px 10px;
+    padding: 3px 12px;
+    min-width: 66px;
+    text-align: center;
     border-radius: 20px;
     border: 1px solid;
 }
@@ -589,6 +590,18 @@ popover listview > row label selection {
     color: #4ade80;
     border-color: rgba(74, 222, 128, 0.3);
     background: rgba(74, 222, 128, 0.1);
+}
+
+.status-extracting {
+    color: #c084fc;
+    border-color: rgba(192, 132, 252, 0.3);
+    background: rgba(192, 132, 252, 0.1);
+}
+
+.status-uploading {
+    color: #38bdf8;
+    border-color: rgba(56, 189, 248, 0.3);
+    background: rgba(56, 189, 248, 0.1);
 }
 
 .status-error {

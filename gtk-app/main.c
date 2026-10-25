@@ -1807,6 +1807,7 @@ static GtkWidget *create_download_row(Download *dl) {
 
     /* Status badge — clickable to reveal error details. */
     dl->lbl_status = gtk_label_new("QUEUED");
+    gtk_label_set_xalign(GTK_LABEL(dl->lbl_status), 0.5);
     gtk_widget_add_css_class(dl->lbl_status, "status-badge");
     gtk_widget_add_css_class(dl->lbl_status, "status-queued");
 
