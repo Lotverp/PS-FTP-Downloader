@@ -4971,6 +4971,9 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                         else if (cid == 4370) { strncpy(g.platform, "PS4", sizeof(g.platform) - 1); break; }
                         else if (cid == 64) { strncpy(g.platform, "PS3", sizeof(g.platform) - 1); break; }
                         else if (cid == 5917) { strncpy(g.platform, "PS2", sizeof(g.platform) - 1); break; }
+                        else if (cid == 110) { strncpy(g.platform, "PSN", sizeof(g.platform) - 1); break; }
+                        else if (cid == 63) { strncpy(g.platform, "PSP", sizeof(g.platform) - 1); break; }
+                        else if (cid == 2297) { strncpy(g.platform, "PS Vita", sizeof(g.platform) - 1); break; }
                     }
                 }
                 if (!g.platform[0]) {
@@ -4982,10 +4985,27 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                     else if (strncmp(g.cusa, "SLUS", 4) == 0 || strncmp(g.cusa, "SLES", 4) == 0 ||
                              strncmp(g.cusa, "SCES", 4) == 0)
                         strncpy(g.platform, "PS2", sizeof(g.platform) - 1);
-                    else if (strstr(g.title, "PS5") || strstr(html_content, "PS5")) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
+                    else if (strncmp(g.cusa, "ULUS", 4) == 0 || strncmp(g.cusa, "ULES", 4) == 0 ||
+                             strncmp(g.cusa, "UCUS", 4) == 0)
+                        strncpy(g.platform, "PSP", sizeof(g.platform) - 1);
+                    else if (strncmp(g.cusa, "PCSF", 4) == 0 || strncmp(g.cusa, "PCSB", 4) == 0 ||
+                             strncmp(g.cusa, "PCSE", 4) == 0)
+                        strncpy(g.platform, "PS Vita", sizeof(g.platform) - 1);
+                    else if (strstr(g.post_url, "downloadgamepsp.org")) {
+                        strncpy(g.platform, strstr(g.post_url, "psvita") ? "PS Vita" : "PSP", sizeof(g.platform) - 1);
+                    } else if (strstr(g.post_url, "nswgame.com") || strstr(g.post_url, "nswgf.com")) {
+                        strncpy(g.platform, "Switch", sizeof(g.platform) - 1);
+                    } else if (strstr(g.post_url, "dlxbgame.com")) {
+                        strncpy(g.platform, "Xbox", sizeof(g.platform) - 1);
+                    } else if (strstr(g.post_url, "gamepciso.com")) {
+                        strncpy(g.platform, "PC", sizeof(g.platform) - 1);
+                    } else if (strstr(g.title, "PS5") || strstr(html_content, "PS5")) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
                     else if (strstr(g.title, "PS4") || strstr(html_content, "PS4")) strncpy(g.platform, "PS4", sizeof(g.platform) - 1);
                     else if (strstr(g.title, "PS3") || strstr(html_content, "PS3")) strncpy(g.platform, "PS3", sizeof(g.platform) - 1);
                     else if (strstr(g.title, "PS2") || strstr(html_content, "PS2")) strncpy(g.platform, "PS2", sizeof(g.platform) - 1);
+                    else if (strstr(g.title, "PS Vita") || strstr(g.title, "PSVita")) strncpy(g.platform, "PS Vita", sizeof(g.platform) - 1);
+                    else if (strstr(g.title, "PSP")) strncpy(g.platform, "PSP", sizeof(g.platform) - 1);
+                    else if (strstr(g.title, "PS1") || strstr(g.title, "PSX")) strncpy(g.platform, "PS1", sizeof(g.platform) - 1);
                 }
 
                 /* 3. Extract GENRE and RELEASE year from table */
@@ -5185,6 +5205,7 @@ typedef struct {
     int total_items;
     int total_pages;
     int page;
+    guint req_id;
     char error_msg[256];
     char status_override[256];
 } DlpsFetchResult;
@@ -5195,12 +5216,22 @@ typedef struct {
     int console;
     int page;
     int per_page;
+    guint req_id;
 } DlpsFetchReq;
 
+static guint g_dlps_active_req_id = 0;
 static void trigger_dlps_fetch(const char *query, int page);
 
 static gboolean on_dlps_fetch_done(gpointer user_data) {
     DlpsFetchResult *res = (DlpsFetchResult *)user_data;
+
+    /* Stale request check: discard if user made another request while this was loading */
+    if (res->req_id != g_dlps_active_req_id) {
+        if (res->games) free(res->games);
+        free(res);
+        return G_SOURCE_REMOVE;
+    }
+
     g_dlps_is_loading = FALSE;
     if (g_dlps_spinner) gtk_spinner_stop(GTK_SPINNER(g_dlps_spinner));
 
@@ -5231,10 +5262,20 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
                      res->status_override);
         } else if (res->total_items > 0 || res->count > 0) {
             const char *cons_suffix = "";
-            if (g_dlps_console_filter == 1) cons_suffix = "  •  PS5";
-            else if (g_dlps_console_filter == 2) cons_suffix = "  •  PS4";
-            else if (g_dlps_console_filter == 3) cons_suffix = "  •  PS3";
-            else if (g_dlps_console_filter == 4) cons_suffix = "  •  PS2";
+            switch (g_dlps_console_filter) {
+                case 1: cons_suffix = "  •  PS5"; break;
+                case 2: cons_suffix = "  •  PS4"; break;
+                case 3: cons_suffix = "  •  PS3"; break;
+                case 4: cons_suffix = "  •  PS2"; break;
+                case 5: cons_suffix = "  •  PS1/PSX"; break;
+                case 6: cons_suffix = "  •  PSP"; break;
+                case 7: cons_suffix = "  •  PS Vita"; break;
+                case 8: cons_suffix = "  •  PSN"; break;
+                case 9: cons_suffix = "  •  Switch"; break;
+                case 10: cons_suffix = "  •  Xbox"; break;
+                case 11: cons_suffix = "  •  PC"; break;
+                default: break;
+            }
 
             const char *reg_suffix = "";
             if (g_dlps_region_filter == 1) reg_suffix = "  •  Europa";
@@ -5246,7 +5287,7 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
                      g_dlps_total_items == 1 ? "gioco" : "giochi",
                      cons_suffix, reg_suffix);
         } else if (res->error_msg[0]) {
-            snprintf(pbuf, sizeof(pbuf), "Errore: %s", res->error_msg);
+            snprintf(pbuf, sizeof(pbuf), "%s", res->error_msg);
         } else {
             snprintf(pbuf, sizeof(pbuf), "Nessun gioco trovato");
         }
@@ -5261,43 +5302,65 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
-static gboolean dlps_extract_slug(const char *input, char *out_slug, size_t out_size) {
+static gboolean dlps_extract_slug(const char *input, char *out_slug, size_t out_size, char *out_domain, size_t out_dom_size) {
     if (!input || !out_slug || out_size == 0) return FALSE;
     out_slug[0] = '\0';
+    if (out_domain && out_dom_size > 0) out_domain[0] = '\0';
 
     const char *p = input;
     while (*p == ' ' || *p == '\t') p++;
 
-    const char *site = strstr(p, "dlpsgame.com/");
-    if (site) {
-        p = site + strlen("dlpsgame.com/");
-        while (*p == '/') p++;
-        size_t len = 0;
-        while (*p && *p != '/' && *p != '?' && *p != '#' && *p != ' ' && len < out_size - 1) {
-            out_slug[len++] = *p++;
+    const char *domains[] = {
+        "dlpsgame.com/",
+        "downloadgamepsp.org/",
+        "dlxbgame.com/",
+        "gamepciso.com/",
+        "nswgame.com/",
+        "nswgf.com/",
+        NULL
+    };
+
+    for (int i = 0; domains[i]; i++) {
+        const char *site = strstr(p, domains[i]);
+        if (site) {
+            if (out_domain && out_dom_size > 0) {
+                snprintf(out_domain, out_dom_size, "https://%.*s", (int)(strlen(domains[i]) - 1), site);
+            }
+            p = site + strlen(domains[i]);
+            while (*p == '/') p++;
+            size_t len = 0;
+            while (*p && *p != '/' && *p != '?' && *p != '#' && *p != ' ' && len < out_size - 1) {
+                out_slug[len++] = *p++;
+            }
+            out_slug[len] = '\0';
+            return (len > 0);
         }
-        out_slug[len] = '\0';
-        return (len > 0);
     }
 
-    const char *c = p;
-    gboolean has_hyphen = FALSE;
-    gboolean valid = TRUE;
-    size_t len = 0;
-    while (*c) {
-        if (*c == '-') {
-            has_hyphen = TRUE;
-        } else if (!g_ascii_isalnum(*c) && *c != '_') {
-            valid = FALSE;
-            break;
-        }
-        len++;
-        c++;
+    /* Check direct slug: must contain -pkg, -iso, or -ps4, -ps5, -ps3, -ps2, -psp, -psvita */
+    size_t in_len = strlen(p);
+    gboolean is_explicit_slug = FALSE;
+    if (in_len >= 5 && (strstr(p, "-pkg") || strstr(p, "-iso") || strstr(p, "ps4-") || strstr(p, "ps5-") || strstr(p, "ps3-") || strstr(p, "ps2-") || strstr(p, "free-download"))) {
+        is_explicit_slug = TRUE;
     }
-    if (valid && has_hyphen && len >= 3 && len < out_size) {
-        strncpy(out_slug, p, out_size - 1);
-        out_slug[out_size - 1] = '\0';
-        return TRUE;
+
+    if (is_explicit_slug) {
+        const char *c = p;
+        gboolean valid = TRUE;
+        size_t len = 0;
+        while (*c) {
+            if (!g_ascii_isalnum(*c) && *c != '-' && *c != '_') {
+                valid = FALSE;
+                break;
+            }
+            len++;
+            c++;
+        }
+        if (valid && len >= 5 && len < out_size) {
+            strncpy(out_slug, p, out_size - 1);
+            out_slug[out_size - 1] = '\0';
+            return TRUE;
+        }
     }
 
     return FALSE;
@@ -5308,6 +5371,7 @@ static void *dlps_fetch_thread_fn(void *arg) {
     CURL *c = curl_easy_init();
     DlpsFetchResult *res_data = g_new0(DlpsFetchResult, 1);
     res_data->page = req->page;
+    res_data->req_id = req->req_id;
 
     if (!c) {
         snprintf(res_data->error_msg, sizeof(res_data->error_msg), "Impossibile inizializzare cURL");
@@ -5316,17 +5380,69 @@ static void *dlps_fetch_thread_fn(void *arg) {
         return NULL;
     }
 
+    const char *base_domain = "https://dlpsgame.com";
+    int cat_id = 0;
+    const char *console_search_tag = NULL;
+
+    switch (req->console) {
+        case 1: /* PS5 */
+            base_domain = "https://dlpsgame.com";
+            cat_id = 63019;
+            break;
+        case 2: /* PS4 */
+            base_domain = "https://dlpsgame.com";
+            cat_id = 4370;
+            break;
+        case 3: /* PS3 */
+            base_domain = "https://dlpsgame.com";
+            cat_id = 64;
+            break;
+        case 4: /* PS2 */
+            base_domain = "https://dlpsgame.com";
+            cat_id = 5917;
+            break;
+        case 5: /* PS1 / PSX */
+            base_domain = "https://dlpsgame.com";
+            console_search_tag = "PS1";
+            break;
+        case 6: /* PSP */
+            base_domain = "https://downloadgamepsp.org";
+            cat_id = 63;
+            break;
+        case 7: /* PS Vita */
+            base_domain = "https://downloadgamepsp.org";
+            cat_id = 2297;
+            break;
+        case 8: /* PSN */
+            base_domain = "https://dlpsgame.com";
+            cat_id = 110;
+            break;
+        case 9: /* Switch */
+            base_domain = "https://nswgame.com";
+            cat_id = 0;
+            break;
+        case 10: /* Xbox */
+            base_domain = "https://dlxbgame.com";
+            cat_id = 0;
+            break;
+        case 11: /* PC */
+            base_domain = "https://gamepciso.com";
+            cat_id = 0;
+            break;
+        default:
+            base_domain = "https://dlpsgame.com";
+            cat_id = 0;
+            break;
+    }
+
     gboolean is_search = (req->query[0] != '\0');
     char slug[256] = "";
-    gboolean is_slug = is_search && dlps_extract_slug(req->query, slug, sizeof(slug));
+    char custom_domain[256] = "";
+    gboolean is_slug = is_search && dlps_extract_slug(req->query, slug, sizeof(slug), custom_domain, sizeof(custom_domain));
+
+    const char *target_domain = custom_domain[0] ? custom_domain : base_domain;
 
     char fetch_url[1024] = "";
-    int cat_id = 0;
-    if (req->console == 1) cat_id = 63019;      /* PS5 */
-    else if (req->console == 2) cat_id = 4370;  /* PS4 */
-    else if (req->console == 3) cat_id = 64;    /* PS3 */
-    else if (req->console == 4) cat_id = 5917;  /* PS2 */
-
     char cat_param[64] = "";
     if (cat_id > 0) {
         snprintf(cat_param, sizeof(cat_param), "&categories=%d", cat_id);
@@ -5336,22 +5452,25 @@ static void *dlps_fetch_thread_fn(void *arg) {
     DlpsMem chunk = { malloc(1), 0 };
     int totals[2] = { 0, 0 };
 
-    /* 1. If input is a URL or slug, attempt direct slug lookup */
+    /* Configure cURL with fast options and automatic decompression */
+    curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
+    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
+    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
+    curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+
+    /* 1. If explicit URL or slug, attempt direct slug lookup */
     if (is_slug) {
         snprintf(fetch_url, sizeof(fetch_url),
-                 "https://dlpsgame.com/wp-json/wp/v2/posts?slug=%s&_fields=id,link,title,content,categories",
-                 slug);
+                 "%s/wp-json/wp/v2/posts?slug=%s&_fields=id,link,title,content,categories",
+                 target_domain, slug);
 
         curl_easy_setopt(c, CURLOPT_URL, fetch_url);
-        curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
-        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
-        curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
-        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
-        curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
-        curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
-        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
-        curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-
         CURLcode res = curl_easy_perform(c);
         if (res == CURLE_OK && chunk.data && chunk.size > 10) {
             const char *p = chunk.data;
@@ -5387,10 +5506,14 @@ static void *dlps_fetch_thread_fn(void *arg) {
         if (is_search) {
             const char *src = req->query;
             while (*src == ' ' || *src == '\t') src++;
-            const char *site = strstr(src, "dlpsgame.com/");
-            if (site) {
-                src = site + strlen("dlpsgame.com/");
-                while (*src == '/') src++;
+            /* Strip known domain prefixes if pasted */
+            for (const char *site = src; ; ) {
+                const char *d = strstr(site, "://");
+                if (d) {
+                    const char *slash = strchr(d + 3, '/');
+                    if (slash) { src = slash + 1; break; }
+                }
+                break;
             }
             size_t cq_len = 0;
             while (*src && *src != '/' && *src != '?' && *src != '#' && cq_len < sizeof(clean_query) - 1) {
@@ -5403,9 +5526,17 @@ static void *dlps_fetch_thread_fn(void *arg) {
             }
             clean_query[cq_len] = '\0';
             g_strstrip(clean_query);
+            if (console_search_tag && !strcasestr(clean_query, console_search_tag)) {
+                size_t cql = strlen(clean_query);
+                if (cql + strlen(console_search_tag) + 2 < sizeof(clean_query)) {
+                    snprintf(clean_query + cql, sizeof(clean_query) - cql, " %s", console_search_tag);
+                }
+            }
         } else {
-            /* Browsing with empty query: filter by region string if set */
-            if (req->region == 1) {
+            /* Browsing with empty query */
+            if (console_search_tag) {
+                strncpy(clean_query, console_search_tag, sizeof(clean_query) - 1);
+            } else if (req->region == 1) {
                 strncpy(clean_query, "EUR", sizeof(clean_query) - 1);
             } else if (req->region == 2) {
                 strncpy(clean_query, "USA", sizeof(clean_query) - 1);
@@ -5417,25 +5548,16 @@ static void *dlps_fetch_thread_fn(void *arg) {
         if (clean_query[0]) {
             char *esc = curl_easy_escape(c, clean_query, 0);
             snprintf(fetch_url, sizeof(fetch_url),
-                     "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d&search=%s%s&_fields=id,link,title,content,categories",
-                     req->per_page, req->page, esc ? esc : clean_query, cat_param);
+                     "%s/wp-json/wp/v2/posts?per_page=%d&page=%d&search=%s%s&_fields=id,link,title,content,categories",
+                     target_domain, req->per_page, req->page, esc ? esc : clean_query, cat_param);
             if (esc) curl_free(esc);
         } else {
             snprintf(fetch_url, sizeof(fetch_url),
-                     "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d%s&_fields=id,link,title,content,categories",
-                     req->per_page, req->page, cat_param);
+                     "%s/wp-json/wp/v2/posts?per_page=%d&page=%d%s&_fields=id,link,title,content,categories",
+                     target_domain, req->per_page, req->page, cat_param);
         }
 
         curl_easy_setopt(c, CURLOPT_URL, fetch_url);
-        curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
-        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
-        curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
-        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
-        curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
-        curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
-        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
-        curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-
         CURLcode res = curl_easy_perform(c);
         if (res == CURLE_OK && chunk.data) {
             res_data->total_items = totals[0];
@@ -5445,6 +5567,9 @@ static void *dlps_fetch_thread_fn(void *arg) {
                                           is_search, res_data->status_override, sizeof(res_data->status_override));
             res_data->games = games;
             res_data->count = n;
+        } else if (res == CURLE_OPERATION_TIMEDOUT) {
+            snprintf(res_data->error_msg, sizeof(res_data->error_msg),
+                     "Timeout connessione (server occupato). Prova a premere Invio o usa una parola chiave più precisa.");
         } else {
             snprintf(res_data->error_msg, sizeof(res_data->error_msg),
                      "Errore connessione: %s", curl_easy_strerror(res));
@@ -5460,10 +5585,18 @@ static void *dlps_fetch_thread_fn(void *arg) {
 }
 
 static void trigger_dlps_fetch(const char *query, int page) {
-    if (g_dlps_is_loading) return;
+    g_dlps_active_req_id++;
+    guint current_id = g_dlps_active_req_id;
+
     g_dlps_is_loading = TRUE;
     if (g_dlps_spinner) gtk_spinner_start(GTK_SPINNER(g_dlps_spinner));
-    if (g_dlps_lbl_page) gtk_label_set_text(GTK_LABEL(g_dlps_lbl_page), "Caricamento giochi da DLPSGame...");
+    if (g_dlps_lbl_page) {
+        if (query && query[0]) {
+            gtk_label_set_text(GTK_LABEL(g_dlps_lbl_page), "Ricerca in corso...");
+        } else {
+            gtk_label_set_text(GTK_LABEL(g_dlps_lbl_page), "Caricamento catalogo...");
+        }
+    }
 
     DlpsFetchReq *req = g_new0(DlpsFetchReq, 1);
     if (query) {
@@ -5477,6 +5610,7 @@ static void trigger_dlps_fetch(const char *query, int page) {
     req->console = g_dlps_console_filter;
     req->page = page > 0 ? page : 1;
     req->per_page = 12;
+    req->req_id = current_id;
 
     pthread_t th;
     if (pthread_create(&th, NULL, dlps_fetch_thread_fn, req) == 0) {
@@ -6604,30 +6738,39 @@ static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list
     gtk_widget_add_css_class(lbl_title, "game-title");
     gtk_box_append(GTK_BOX(info_col), lbl_title);
 
-    GtkWidget *badges_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    /* Badge row 1: System, Title ID, Region */
+    GtkWidget *badges_row1 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *lbl_platform = gtk_label_new("");
     gtk_widget_add_css_class(lbl_platform, "badge-platform");
     GtkWidget *lbl_cusa = gtk_label_new("");
     gtk_widget_add_css_class(lbl_cusa, "badge-cusa");
     GtkWidget *lbl_reg = gtk_label_new("");
     gtk_widget_add_css_class(lbl_reg, "badge-region");
-    GtkWidget *lbl_year = gtk_label_new("");
-    gtk_widget_add_css_class(lbl_year, "badge-year");
+
+    gtk_box_append(GTK_BOX(badges_row1), lbl_platform);
+    gtk_box_append(GTK_BOX(badges_row1), lbl_cusa);
+    gtk_box_append(GTK_BOX(badges_row1), lbl_reg);
+    gtk_box_append(GTK_BOX(info_col), badges_row1);
+
+    /* Badge row 2: Genre, Year, Password */
+    GtkWidget *badges_row2 = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     GtkWidget *lbl_genre = gtk_label_new("");
     gtk_widget_add_css_class(lbl_genre, "badge-genre");
+    GtkWidget *lbl_year = gtk_label_new("");
+    gtk_widget_add_css_class(lbl_year, "badge-year");
     GtkWidget *lbl_pass = gtk_label_new("");
     gtk_widget_add_css_class(lbl_pass, "badge-pass");
 
-    gtk_box_append(GTK_BOX(badges_row), lbl_platform);
-    gtk_box_append(GTK_BOX(badges_row), lbl_cusa);
-    gtk_box_append(GTK_BOX(badges_row), lbl_reg);
-    gtk_box_append(GTK_BOX(badges_row), lbl_year);
-    gtk_box_append(GTK_BOX(badges_row), lbl_genre);
-    gtk_box_append(GTK_BOX(badges_row), lbl_pass);
-    gtk_box_append(GTK_BOX(info_col), badges_row);
+    gtk_box_append(GTK_BOX(badges_row2), lbl_genre);
+    gtk_box_append(GTK_BOX(badges_row2), lbl_year);
+    gtk_box_append(GTK_BOX(badges_row2), lbl_pass);
+    gtk_box_append(GTK_BOX(info_col), badges_row2);
 
     GtkWidget *lbl_links = gtk_label_new("");
     gtk_label_set_xalign(GTK_LABEL(lbl_links), 0.0);
+    gtk_label_set_wrap(GTK_LABEL(lbl_links), TRUE);
+    gtk_label_set_lines(GTK_LABEL(lbl_links), 1);
+    gtk_label_set_ellipsize(GTK_LABEL(lbl_links), PANGO_ELLIPSIZE_END);
     gtk_widget_add_css_class(lbl_links, "game-links-snippet");
     gtk_box_append(GTK_BOX(info_col), lbl_links);
 
@@ -6774,7 +6917,16 @@ static void on_dlps_search_changed(GtkSearchEntry *entry, gpointer user_data) {
         g_source_remove(g_dlps_search_timer_id);
         g_dlps_search_timer_id = 0;
     }
-    g_dlps_search_timer_id = g_timeout_add(500, on_dlps_search_debounced_cb, NULL);
+    const char *q = g_dlps_search_entry ? gtk_editable_get_text(GTK_EDITABLE(g_dlps_search_entry)) : "";
+    if (!q || q[0] == '\0') {
+        /* When search bar is cleared, reset catalog immediately */
+        trigger_dlps_fetch("", 1);
+        return;
+    }
+    /* Only auto-search while typing if user has entered at least 3 characters to avoid server overload */
+    if (strlen(q) >= 3) {
+        g_dlps_search_timer_id = g_timeout_add(800, on_dlps_search_debounced_cb, NULL);
+    }
 }
 
 static void on_dlps_search_activated(GtkSearchEntry *entry, gpointer user_data) {
@@ -6784,6 +6936,16 @@ static void on_dlps_search_activated(GtkSearchEntry *entry, gpointer user_data) 
         g_dlps_search_timer_id = 0;
     }
     const char *q = gtk_editable_get_text(GTK_EDITABLE(entry));
+    trigger_dlps_fetch(q, 1);
+}
+
+static void on_dlps_search_btn_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn; (void)user_data;
+    if (g_dlps_search_timer_id > 0) {
+        g_source_remove(g_dlps_search_timer_id);
+        g_dlps_search_timer_id = 0;
+    }
+    const char *q = g_dlps_search_entry ? gtk_editable_get_text(GTK_EDITABLE(g_dlps_search_entry)) : "";
     trigger_dlps_fetch(q, 1);
 }
 
@@ -6819,9 +6981,9 @@ static GtkWidget *build_dlpsgame_page(void) {
     gtk_widget_set_margin_bottom(box, 12);
     gtk_widget_set_vexpand(box, TRUE);
 
-    /* Toolbar */
-    GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_widget_add_css_class(toolbar, "dlps-toolbar");
+    /* Row 1: Search and Filters */
+    GtkWidget *toolbar_top = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(toolbar_top, "dlps-toolbar");
 
     GtkWidget *btn_back = gtk_button_new_with_label("Torna ai Download");
     gtk_widget_add_css_class(btn_back, "btn-nav");
@@ -6831,9 +6993,14 @@ static GtkWidget *build_dlpsgame_page(void) {
     g_dlps_search_entry = gtk_search_entry_new();
     gtk_widget_add_css_class(g_dlps_search_entry, "dlps-search");
     gtk_widget_set_hexpand(g_dlps_search_entry, TRUE);
-    g_object_set(g_dlps_search_entry, "placeholder-text", "Cerca giochi e app (PS5, PS4, ecc.)...", NULL);
+    g_object_set(g_dlps_search_entry, "placeholder-text", "Cerca per titolo, CUSA o incolla link/slug...", NULL);
     g_signal_connect(g_dlps_search_entry, "activate", G_CALLBACK(on_dlps_search_activated), NULL);
     g_signal_connect(g_dlps_search_entry, "search-changed", G_CALLBACK(on_dlps_search_changed), NULL);
+
+    GtkWidget *btn_search = gtk_button_new_with_label("Cerca");
+    gtk_widget_add_css_class(btn_search, "btn-page");
+    gtk_widget_set_focusable(btn_search, FALSE);
+    g_signal_connect(btn_search, "clicked", G_CALLBACK(on_dlps_search_btn_clicked), NULL);
 
     GtkStringList *dlps_consoles = gtk_string_list_new(NULL);
     gtk_string_list_append(dlps_consoles, "Tutte le Console");
@@ -6841,6 +7008,13 @@ static GtkWidget *build_dlpsgame_page(void) {
     gtk_string_list_append(dlps_consoles, "PlayStation 4 (PS4)");
     gtk_string_list_append(dlps_consoles, "PlayStation 3 (PS3)");
     gtk_string_list_append(dlps_consoles, "PlayStation 2 (PS2)");
+    gtk_string_list_append(dlps_consoles, "PlayStation 1 (PS1 / PSX)");
+    gtk_string_list_append(dlps_consoles, "PlayStation Portable (PSP)");
+    gtk_string_list_append(dlps_consoles, "PlayStation Vita (PS Vita)");
+    gtk_string_list_append(dlps_consoles, "PlayStation Network (PSN)");
+    gtk_string_list_append(dlps_consoles, "Nintendo Switch");
+    gtk_string_list_append(dlps_consoles, "Xbox");
+    gtk_string_list_append(dlps_consoles, "PC Games");
 
     g_dlps_console_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_consoles), NULL);
     gtk_widget_add_css_class(g_dlps_console_dropdown, "catalog-dropdown");
@@ -6860,19 +7034,31 @@ static GtkWidget *build_dlpsgame_page(void) {
     g_object_unref(dlps_regions);
     g_signal_connect(g_dlps_region_dropdown, "notify::selected", G_CALLBACK(on_dlps_region_changed), NULL);
 
-    g_dlps_spinner = gtk_spinner_new();
-    gtk_widget_set_valign(g_dlps_spinner, GTK_ALIGN_CENTER);
+    gtk_box_append(GTK_BOX(toolbar_top), btn_back);
+    gtk_box_append(GTK_BOX(toolbar_top), g_dlps_search_entry);
+    gtk_box_append(GTK_BOX(toolbar_top), btn_search);
+    gtk_box_append(GTK_BOX(toolbar_top), g_dlps_console_dropdown);
+    gtk_box_append(GTK_BOX(toolbar_top), g_dlps_region_dropdown);
 
-    g_dlps_btn_prev = gtk_button_new_with_label("Precedente");
+    /* Row 2: Navigation & Status Bar */
+    GtkWidget *toolbar_bottom = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_add_css_class(toolbar_bottom, "dlps-statusbar");
+
+    g_dlps_btn_prev = gtk_button_new_with_label("◀ Precedente");
     gtk_widget_add_css_class(g_dlps_btn_prev, "btn-page");
     gtk_widget_set_focusable(g_dlps_btn_prev, FALSE);
     gtk_widget_set_sensitive(g_dlps_btn_prev, FALSE);
     g_signal_connect(g_dlps_btn_prev, "clicked", G_CALLBACK(on_dlps_prev_clicked), NULL);
 
+    g_dlps_spinner = gtk_spinner_new();
+    gtk_widget_set_valign(g_dlps_spinner, GTK_ALIGN_CENTER);
+
     g_dlps_lbl_page = gtk_label_new("Pronto");
     gtk_widget_add_css_class(g_dlps_lbl_page, "dlps-page-label");
+    gtk_widget_set_hexpand(g_dlps_lbl_page, TRUE);
+    gtk_label_set_xalign(GTK_LABEL(g_dlps_lbl_page), 0.5);
 
-    g_dlps_btn_next = gtk_button_new_with_label("Successivo");
+    g_dlps_btn_next = gtk_button_new_with_label("Successivo ▶");
     gtk_widget_add_css_class(g_dlps_btn_next, "btn-page");
     gtk_widget_set_focusable(g_dlps_btn_next, FALSE);
     gtk_widget_set_sensitive(g_dlps_btn_next, FALSE);
@@ -6884,17 +7070,14 @@ static GtkWidget *build_dlpsgame_page(void) {
     gtk_widget_set_tooltip_text(btn_refresh, "Aggiorna elenco");
     g_signal_connect(btn_refresh, "clicked", G_CALLBACK(on_dlps_refresh_clicked), NULL);
 
-    gtk_box_append(GTK_BOX(toolbar), btn_back);
-    gtk_box_append(GTK_BOX(toolbar), g_dlps_search_entry);
-    gtk_box_append(GTK_BOX(toolbar), g_dlps_console_dropdown);
-    gtk_box_append(GTK_BOX(toolbar), g_dlps_region_dropdown);
-    gtk_box_append(GTK_BOX(toolbar), g_dlps_spinner);
-    gtk_box_append(GTK_BOX(toolbar), g_dlps_btn_prev);
-    gtk_box_append(GTK_BOX(toolbar), g_dlps_lbl_page);
-    gtk_box_append(GTK_BOX(toolbar), g_dlps_btn_next);
-    gtk_box_append(GTK_BOX(toolbar), btn_refresh);
+    gtk_box_append(GTK_BOX(toolbar_bottom), g_dlps_btn_prev);
+    gtk_box_append(GTK_BOX(toolbar_bottom), g_dlps_spinner);
+    gtk_box_append(GTK_BOX(toolbar_bottom), g_dlps_lbl_page);
+    gtk_box_append(GTK_BOX(toolbar_bottom), g_dlps_btn_next);
+    gtk_box_append(GTK_BOX(toolbar_bottom), btn_refresh);
 
-    gtk_box_append(GTK_BOX(box), toolbar);
+    gtk_box_append(GTK_BOX(box), toolbar_top);
+    gtk_box_append(GTK_BOX(box), toolbar_bottom);
 
     /* ListView Model */
     GtkNoSelection *sel = gtk_no_selection_new(G_LIST_MODEL(g_dlps_store));
