@@ -12,5 +12,9 @@ gtk-app/ps-ftp-downloader
 # Temp build folder
 .deb-build/
 
+# Python cache
+__pycache__/
+*.pyc
+
 # Notes
 update.txt

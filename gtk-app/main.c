@@ -1459,7 +1459,7 @@ static void load_css(void) {
     gtk_style_context_add_provider_for_display(
         gdk_display_get_default(),
         GTK_STYLE_PROVIDER(provider),
-        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+        GTK_STYLE_PROVIDER_PRIORITY_USER);
     g_object_unref(provider);
 }
 
@@ -1719,6 +1719,7 @@ static GtkWidget *make_action_btn(const char *label, const char *css_class,
     GtkWidget *btn = gtk_button_new_with_label(label);
     gtk_widget_add_css_class(btn, "btn-icon");
     gtk_widget_add_css_class(btn, css_class);
+    gtk_widget_set_focusable(btn, FALSE);
     g_object_set_data(G_OBJECT(btn), "dl-id", GINT_TO_POINTER(dl_id));
     g_signal_connect(btn, "clicked", cb, NULL);
     return btn;
@@ -4047,6 +4048,9 @@ static void on_catalog_install_clicked(GtkButton *btn, gpointer user_data) {
 /* Catalog row factory */
 static void on_catalog_item_setup(GtkSignalListItemFactory *self, GtkListItem *list_item, gpointer user_data) {
     (void)self; (void)user_data;
+    gtk_list_item_set_selectable(list_item, FALSE);
+    gtk_list_item_set_focusable(list_item, FALSE);
+
     GtkWidget *card = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 14);
     gtk_widget_add_css_class(card, "catalog-card");
     gtk_widget_set_hexpand(card, TRUE);
@@ -4094,6 +4098,7 @@ static void on_catalog_item_setup(GtkSignalListItemFactory *self, GtkListItem *l
     GtkWidget *btn_inst = gtk_button_new_with_label("Installa");
     gtk_widget_add_css_class(btn_inst, "btn-install");
     gtk_widget_set_valign(btn_inst, GTK_ALIGN_CENTER);
+    gtk_widget_set_focusable(btn_inst, FALSE);
 
     gtk_box_append(GTK_BOX(card), img);
     gtk_box_append(GTK_BOX(card), col);
@@ -4238,6 +4243,7 @@ static GtkWidget *build_catalog_page(void) {
 
     GtkWidget *btn_back = gtk_button_new_with_label("Torna ai Download");
     gtk_widget_add_css_class(btn_back, "btn-nav");
+    gtk_widget_set_focusable(btn_back, FALSE);
     g_signal_connect(btn_back, "clicked", G_CALLBACK(on_back_to_downloads_clicked), NULL);
 
     g_catalog_search_entry = gtk_search_entry_new();
@@ -4247,6 +4253,7 @@ static GtkWidget *build_catalog_page(void) {
 
     g_catalog_cat_dropdown = gtk_drop_down_new(NULL, NULL);
     gtk_widget_add_css_class(g_catalog_cat_dropdown, "catalog-dropdown");
+    gtk_widget_set_focusable(g_catalog_cat_dropdown, FALSE);
     GtkStringList *init_cats = gtk_string_list_new(NULL);
     gtk_string_list_append(init_cats, "Tutte");
     gtk_drop_down_set_model(GTK_DROP_DOWN(g_catalog_cat_dropdown), G_LIST_MODEL(init_cats));
@@ -4259,15 +4266,18 @@ static GtkWidget *build_catalog_page(void) {
     gtk_string_list_append(reg_list, "America (USA)");
     g_catalog_reg_dropdown = gtk_drop_down_new(G_LIST_MODEL(reg_list), NULL);
     gtk_widget_add_css_class(g_catalog_reg_dropdown, "catalog-dropdown");
+    gtk_widget_set_focusable(g_catalog_reg_dropdown, FALSE);
     g_object_unref(reg_list);
     g_signal_connect(g_catalog_reg_dropdown, "notify::selected", G_CALLBACK(on_catalog_reg_selected), NULL);
 
     GtkWidget *btn_sources = gtk_button_new_with_label("Sorgenti");
     gtk_widget_add_css_class(btn_sources, "btn-sources");
+    gtk_widget_set_focusable(btn_sources, FALSE);
     g_signal_connect(btn_sources, "clicked", G_CALLBACK(on_sources_clicked), NULL);
 
     GtkWidget *btn_refresh = gtk_button_new_with_label("Aggiorna");
     gtk_widget_add_css_class(btn_refresh, "btn-refresh-cat");
+    gtk_widget_set_focusable(btn_refresh, FALSE);
     g_signal_connect(btn_refresh, "clicked", G_CALLBACK(on_refresh_catalog_clicked), NULL);
 
     gtk_box_append(GTK_BOX(toolbar), btn_back);
@@ -6158,6 +6168,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
         GtkWidget *btn_copy_pwd = gtk_button_new_with_label("Copia Password");
         gtk_widget_add_css_class(btn_copy_pwd, "btn-copy-link");
+        gtk_widget_set_focusable(btn_copy_pwd, FALSE);
         g_signal_connect(btn_copy_pwd, "clicked", G_CALLBACK(on_copy_str_clicked), (gpointer)game->password);
         gtk_box_append(GTK_BOX(pwd_box), btn_copy_pwd);
 
@@ -6168,6 +6179,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
         GtkWidget *btn_auto = gtk_button_new_with_label("Scarica Automatico su PS");
         gtk_widget_add_css_class(btn_auto, "btn-primary");
         gtk_widget_set_halign(btn_auto, GTK_ALIGN_START);
+        gtk_widget_set_focusable(btn_auto, FALSE);
         g_signal_connect(btn_auto, "clicked", G_CALLBACK(on_dlps_auto_clicked), (gpointer)game);
         gtk_box_append(GTK_BOX(info_col), btn_auto);
 
@@ -6183,6 +6195,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
         GtkWidget *btn_post = gtk_button_new_with_label("Apri Pagina Web");
         gtk_widget_add_css_class(btn_post, "btn-browser");
         gtk_widget_set_halign(btn_post, GTK_ALIGN_START);
+        gtk_widget_set_focusable(btn_post, FALSE);
         g_signal_connect(btn_post, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->post_url);
         gtk_box_append(GTK_BOX(info_col), btn_post);
     }
@@ -6251,6 +6264,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
             GtkWidget *btn_dl = gtk_button_new_with_label("Scarica .PKG");
             gtk_widget_add_css_class(btn_dl, "btn-prefill");
+            gtk_widget_set_focusable(btn_dl, FALSE);
             g_signal_connect(btn_dl, "clicked", G_CALLBACK(on_prefill_download_clicked), pfd);
             gtk_box_append(GTK_BOX(row), btn_dl);
         } else if (game->links[i].type == DLPS_LINK_MEDIAFIRE) {
@@ -6262,11 +6276,13 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
             GtkWidget *btn_mf = gtk_button_new_with_label("Risolvi e Scarica");
             gtk_widget_add_css_class(btn_mf, "btn-resolve");
+            gtk_widget_set_focusable(btn_mf, FALSE);
             g_signal_connect(btn_mf, "clicked", G_CALLBACK(on_dlps_mediafire_clicked), mfd);
             gtk_box_append(GTK_BOX(row), btn_mf);
 
             GtkWidget *btn_wb = gtk_button_new_with_label("Apri nel Browser");
             gtk_widget_add_css_class(btn_wb, "btn-browser");
+            gtk_widget_set_focusable(btn_wb, FALSE);
             g_signal_connect(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->links[i].url);
             gtk_box_append(GTK_BOX(row), btn_wb);
         } else {
@@ -6280,6 +6296,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
                 GtkWidget *btn_rd = gtk_button_new_with_label("Debrid 1-Click");
                 gtk_widget_add_css_class(btn_rd, "btn-debrid");
+                gtk_widget_set_focusable(btn_rd, FALSE);
                 g_signal_connect(btn_rd, "clicked", G_CALLBACK(on_dlps_realdebrid_clicked), rdd);
                 gtk_box_append(GTK_BOX(row), btn_rd);
             }
@@ -6294,6 +6311,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
                 GtkWidget *btn_uc = gtk_button_new_with_label("Sblocca con UC");
                 gtk_widget_add_css_class(btn_uc, "btn-uc");
+                gtk_widget_set_focusable(btn_uc, FALSE);
                 g_signal_connect(btn_uc, "clicked", G_CALLBACK(on_dlps_uc_clicked), ucd);
                 gtk_box_append(GTK_BOX(row), btn_uc);
             }
@@ -6301,12 +6319,14 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             const char *btn_lbl = (game->links[i].type == DLPS_LINK_PROTECTOR) ? "Sblocca nel Browser" : "Apri Pagina";
             GtkWidget *btn_wb = gtk_button_new_with_label(btn_lbl);
             gtk_widget_add_css_class(btn_wb, "btn-browser");
+            gtk_widget_set_focusable(btn_wb, FALSE);
             g_signal_connect(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->links[i].url);
             gtk_box_append(GTK_BOX(row), btn_wb);
         }
 
         GtkWidget *btn_cp = gtk_button_new_with_label("Copia");
         gtk_widget_add_css_class(btn_cp, "btn-copy-link");
+        gtk_widget_set_focusable(btn_cp, FALSE);
         g_signal_connect(btn_cp, "clicked", G_CALLBACK(on_copy_str_clicked), (gpointer)game->links[i].url);
         gtk_box_append(GTK_BOX(row), btn_cp);
 
@@ -6342,6 +6362,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
     GtkWidget *btn_paste = gtk_button_new_with_label("Incolla da Appunti");
     gtk_widget_add_css_class(btn_paste, "btn-copy-link");
+    gtk_widget_set_focusable(btn_paste, FALSE);
     g_signal_connect(btn_paste, "clicked", G_CALLBACK(on_paste_clipboard_to_entry), entry_direct);
     gtk_box_append(GTK_BOX(row_input), btn_paste);
 
@@ -6353,6 +6374,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
     GtkWidget *btn_start_ps = gtk_button_new_with_label("Avvia su PS");
     gtk_widget_add_css_class(btn_start_ps, "btn-primary");
+    gtk_widget_set_focusable(btn_start_ps, FALSE);
     g_signal_connect(btn_start_ps, "clicked", G_CALLBACK(on_start_direct_dl_clicked), ddd);
     gtk_box_append(GTK_BOX(row_input), btn_start_ps);
 
@@ -6376,6 +6398,9 @@ static void on_dlps_card_details_clicked(GtkButton *btn, gpointer user_data) {
 
 static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list_item, gpointer user_data) {
     (void)self; (void)user_data;
+    gtk_list_item_set_selectable(list_item, FALSE);
+    gtk_list_item_set_focusable(list_item, FALSE);
+
     GtkWidget *card = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 14);
     gtk_widget_add_css_class(card, "game-card");
 
@@ -6428,6 +6453,7 @@ static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list
     GtkWidget *btn = gtk_button_new_with_label("Dettagli e Link");
     gtk_widget_add_css_class(btn, "btn-install");
     gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_focusable(btn, FALSE);
     gtk_box_append(GTK_BOX(card), btn);
 
     g_object_set_data(G_OBJECT(card), "img", img);
@@ -6616,6 +6642,7 @@ static GtkWidget *build_dlpsgame_page(void) {
 
     GtkWidget *btn_back = gtk_button_new_with_label("Torna ai Download");
     gtk_widget_add_css_class(btn_back, "btn-nav");
+    gtk_widget_set_focusable(btn_back, FALSE);
     g_signal_connect(btn_back, "clicked", G_CALLBACK(on_back_to_downloads_clicked), NULL);
 
     g_dlps_search_entry = gtk_search_entry_new();
@@ -6634,6 +6661,7 @@ static GtkWidget *build_dlpsgame_page(void) {
 
     g_dlps_console_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_consoles), NULL);
     gtk_widget_add_css_class(g_dlps_console_dropdown, "catalog-dropdown");
+    gtk_widget_set_focusable(g_dlps_console_dropdown, FALSE);
     g_object_unref(dlps_consoles);
     g_signal_connect(g_dlps_console_dropdown, "notify::selected", G_CALLBACK(on_dlps_console_changed), NULL);
 
@@ -6645,6 +6673,7 @@ static GtkWidget *build_dlpsgame_page(void) {
 
     g_dlps_region_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_regions), NULL);
     gtk_widget_add_css_class(g_dlps_region_dropdown, "catalog-dropdown");
+    gtk_widget_set_focusable(g_dlps_region_dropdown, FALSE);
     g_object_unref(dlps_regions);
     g_signal_connect(g_dlps_region_dropdown, "notify::selected", G_CALLBACK(on_dlps_region_changed), NULL);
 
@@ -6653,6 +6682,7 @@ static GtkWidget *build_dlpsgame_page(void) {
 
     g_dlps_btn_prev = gtk_button_new_with_label("Precedente");
     gtk_widget_add_css_class(g_dlps_btn_prev, "btn-page");
+    gtk_widget_set_focusable(g_dlps_btn_prev, FALSE);
     gtk_widget_set_sensitive(g_dlps_btn_prev, FALSE);
     g_signal_connect(g_dlps_btn_prev, "clicked", G_CALLBACK(on_dlps_prev_clicked), NULL);
 
@@ -6661,11 +6691,13 @@ static GtkWidget *build_dlpsgame_page(void) {
 
     g_dlps_btn_next = gtk_button_new_with_label("Successivo");
     gtk_widget_add_css_class(g_dlps_btn_next, "btn-page");
+    gtk_widget_set_focusable(g_dlps_btn_next, FALSE);
     gtk_widget_set_sensitive(g_dlps_btn_next, FALSE);
     g_signal_connect(g_dlps_btn_next, "clicked", G_CALLBACK(on_dlps_next_clicked), NULL);
 
     GtkWidget *btn_refresh = gtk_button_new_with_label("Aggiorna");
     gtk_widget_add_css_class(btn_refresh, "btn-page");
+    gtk_widget_set_focusable(btn_refresh, FALSE);
     gtk_widget_set_tooltip_text(btn_refresh, "Aggiorna elenco");
     g_signal_connect(btn_refresh, "clicked", G_CALLBACK(on_dlps_refresh_clicked), NULL);
 
@@ -6758,6 +6790,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_button_set_child(GTK_BUTTON(btn_github), github_img);
     gtk_widget_add_css_class(btn_github, "flat");
     gtk_widget_add_css_class(btn_github, "github-btn");
+    gtk_widget_set_focusable(btn_github, FALSE);
     gtk_widget_set_valign(btn_github, GTK_ALIGN_CENTER);
     gtk_widget_set_tooltip_text(btn_github, "View on GitHub");
     g_signal_connect(btn_github, "clicked", G_CALLBACK(on_github_clicked), NULL);
@@ -6785,27 +6818,32 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
     GtkWidget *btn_dlps = gtk_button_new_with_label("Sfoglia Giochi");
     gtk_widget_add_css_class(btn_dlps, "btn-dlps");
+    gtk_widget_set_focusable(btn_dlps, FALSE);
     gtk_widget_set_valign(btn_dlps, GTK_ALIGN_CENTER);
     g_signal_connect(btn_dlps, "clicked", G_CALLBACK(on_dlps_clicked), NULL);
 
     GtkWidget *btn_sources = gtk_button_new_with_label("Sorgenti");
     gtk_widget_add_css_class(btn_sources, "btn-settings");
+    gtk_widget_set_focusable(btn_sources, FALSE);
     gtk_widget_set_valign(btn_sources, GTK_ALIGN_CENTER);
     g_signal_connect(btn_sources, "clicked", G_CALLBACK(on_sources_clicked), g_window);
 
     GtkWidget *btn_catalog = gtk_button_new_with_label("Tools");
     gtk_widget_add_css_class(btn_catalog, "btn-nav");
+    gtk_widget_set_focusable(btn_catalog, FALSE);
     gtk_widget_set_valign(btn_catalog, GTK_ALIGN_CENTER);
     g_signal_connect(btn_catalog, "clicked", G_CALLBACK(on_catalog_clicked), NULL);
 
     GtkWidget *btn_settings = gtk_button_new_with_label("Settings");
     gtk_widget_add_css_class(btn_settings, "btn-settings");
+    gtk_widget_set_focusable(btn_settings, FALSE);
     gtk_widget_set_valign(btn_settings, GTK_ALIGN_CENTER);
     g_signal_connect(btn_settings, "clicked",
                      G_CALLBACK(on_settings_clicked), g_window);
 
     GtkWidget *btn_arch = gtk_button_new_with_label("Split Archive");
     gtk_widget_add_css_class(btn_arch, "btn-add");
+    gtk_widget_set_focusable(btn_arch, FALSE);
     gtk_widget_set_valign(btn_arch, GTK_ALIGN_CENTER);
     gtk_widget_set_tooltip_text(btn_arch,
         "Download a multi-part archive, extract locally with 7zip, and upload the .pkg via FTP");
@@ -6813,6 +6851,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
 
     GtkWidget *btn_add = gtk_button_new_with_label("New Download");
     gtk_widget_add_css_class(btn_add, "btn-add");
+    gtk_widget_set_focusable(btn_add, FALSE);
     gtk_widget_set_valign(btn_add, GTK_ALIGN_CENTER);
     g_signal_connect(btn_add, "clicked", G_CALLBACK(on_add_clicked), g_window);
 
