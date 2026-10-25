@@ -4,17 +4,17 @@
 #                 PS FTP Downloader (GTK4)
 #
 #  Usage: ./build-deb.sh
-#  Output: ../ps-ftp-downloader_1.2.9_amd64.deb
+#  Output: ../ps-ftp-downloader_1.3.1_amd64.deb
 # ─────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 PKG_NAME="ps-ftp-downloader"
-PKG_VERSION="1.2.9"
+PKG_VERSION="1.3.3"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
-PKG_DESCRIPTION="Download PKG directly from the network to PS via FTP — with split-archive support"
-PKG_DEPENDS="libgtk-4-1, libcurl4 | libcurl4t64, 7zip | p7zip-full | unrar"
+PKG_DESCRIPTION="Download PKG directly from network to PS via FTP — with split-archive & DLPSGame PS4 catalog"
+PKG_DEPENDS="libgtk-4-1, libcurl4 | libcurl4t64, libjson-glib-1.0-0, 7zip | p7zip-full | unrar"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${SCRIPT_DIR}/../.deb-build"
@@ -34,9 +34,10 @@ MISSING=()
 for cmd in gcc pkg-config dpkg-deb; do command -v "$cmd" &>/dev/null || MISSING+=("$cmd"); done
 if ! pkg-config --exists gtk4 2>/dev/null; then MISSING+=("libgtk-4-dev"); fi
 if ! pkg-config --exists libcurl 2>/dev/null; then MISSING+=("libcurl4-openssl-dev"); fi
+if ! pkg-config --exists json-glib-1.0 2>/dev/null; then MISSING+=("libjson-glib-dev"); fi
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo -e "${RED}Missing: ${MISSING[*]}${RESET}"
-    echo "  sudo apt-get install -y build-essential libgtk-4-dev libcurl4-openssl-dev"
+    echo "  sudo apt-get install -y build-essential libgtk-4-dev libcurl4-openssl-dev libjson-glib-dev"
     exit 1
 fi
 echo -e "  [OK] Dependencies satisfied"
@@ -116,8 +117,10 @@ chmod 0755 "${PKG_ROOT}/DEBIAN/postrm"
 
 install -m 0755 "${SCRIPT_DIR}/ps-ftp-downloader"           "${PKG_ROOT}/usr/bin/ps-ftp-downloader"
 install -m 0644 "${SCRIPT_DIR}/style.css"                     "${PKG_ROOT}/usr/share/ps-ftp-downloader/style.css"
-install -m 0644 "${SCRIPT_DIR}/ps-ftp-downloader.desktop"   "${PKG_ROOT}/usr/share/applications/ps-ftp-downloader.desktop"
 install -m 0644 "${SCRIPT_DIR}/github-mark.svg"             "${PKG_ROOT}/usr/share/ps-ftp-downloader/github-mark.svg"
+if [ -f "${SCRIPT_DIR}/../catalog.json" ]; then
+    install -m 0644 "${SCRIPT_DIR}/../catalog.json"         "${PKG_ROOT}/usr/share/ps-ftp-downloader/catalog.json.example"
+fi
 
 # Check if the PNG icon exists, otherwise use SVG fallback
 if [ -f "${SCRIPT_DIR}/ps-ftp-downloader.png" ]; then

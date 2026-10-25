@@ -23,6 +23,8 @@ Compatible with any PS FTP server: **GoldHen (PS4)**, **ps4-hen**, **ps3-hen**, 
 
 | Feature | Description |
 |----------|-------------|
+| **Giochi PS4 (DLPSGame)** | Live browser for 6,500+ PS4 games from DLPSGame with covers, CUSA & links |
+| **App Catalog**    | Built-in homebrew & app catalog with instant 1-click install |
 | **Pure Streaming** | Simultaneous HTTP download and FTP upload via 2 MB ring-buffer |
 | **Zero Storage** | No temporary files saved on your PC (for standard single files) |
 | **Split-Archives** | Download multi-part archives, extract locally with 7zip, and upload the `.pkg` |
@@ -43,7 +45,7 @@ Compatible with any PS FTP server: **GoldHen (PS4)**, **ps4-hen**, **ps3-hen**, 
 Check the **[Releases](../../releases)** tab for the pre-compiled `.deb` package.
 
 ```bash
-sudo apt install ./ps-ftp-downloader_1.2.9_amd64.deb
+sudo apt install ./ps-ftp-downloader_1.3.3_amd64.deb
 ```
 
 Then launch from your application menu or terminal:
@@ -55,7 +57,7 @@ ps-ftp-downloader
 
 ```bash
 # Dependencies
-sudo apt-get install -y build-essential libgtk-4-dev libcurl4-openssl-dev
+sudo apt-get install -y build-essential libgtk-4-dev libcurl4-openssl-dev libjson-glib-dev
 
 # Clone and build
 git clone https://github.com/Lotverp/PS-FTP-Downloader.git
@@ -69,7 +71,7 @@ make
 ```bash
 cd PS-FTP-Downloader/gtk-app
 ./build-deb.sh
-sudo apt install ../ps-ftp-downloader_1.2.9_amd64.deb
+sudo apt install ../ps-ftp-downloader_1.3.3_amd64.deb
 ```
 
 ---
@@ -109,6 +111,31 @@ Before using the application, you must enable the FTP server on your console:
    - Extract them locally using 7zip.
    - Upload the resulting `.pkg` file to the PS via FTP.
    - Automatically delete all temporary files.
+
+### App Catalog & Feeds
+1. Click **Catalogo** in the header bar to browse available homebrew and applications.
+2. Filter items instantly using the **Search bar** or the **Category dropdown**.
+3. Click **Installa** on any item to start a 1-click install directly to your PS (supports single `.pkg` or multi-part archives with extraction).
+4. Click **Sorgenti** to add or manage your custom HTTPS JSON feed URLs.
+
+#### Catalog Feed Format (`catalog.json`)
+```json
+{
+  "name": "Feed Name",
+  "items": [
+    {
+      "id": "itemzflow",
+      "name": "Itemzflow",
+      "version": "1.0",
+      "category": "Tools",
+      "description": "Game manager for PS4",
+      "icon": "https://.../icon.png",
+      "url": "https://.../file.pkg",
+      "pkg_name": "Itemzflow.pkg"
+    }
+  ]
+}
+```
 
 ### After Transfer Completes
 1. Once the transfer is **DONE**, go to your PS.

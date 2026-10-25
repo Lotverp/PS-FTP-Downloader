@@ -1,0 +1,42 @@
+{
+  "name": "PS4 Homebrew Community Feed",
+  "items": [
+    {
+      "id": "itemzflow",
+      "name": "Itemzflow Game Manager",
+      "version": "1.08",
+      "category": "Tools",
+      "description": "Game manager, backup launcher, and homebrew utility for PlayStation 4.",
+      "icon": "https://raw.githubusercontent.com/LightningMods/Itemzflow/master/.github/icon.png",
+      "url": "https://github.com/LightningMods/Itemzflow/releases/download/v1.08/Itemzflow.pkg",
+      "pkg_name": "Itemzflow.pkg",
+      "size": 48234496
+    },
+    {
+      "id": "apollo-save-tool",
+      "name": "Apollo Save Tool PS4",
+      "version": "1.4.0",
+      "category": "Save Management",
+      "description": "Manage, resign, backup, and restore PS4 save-game files with cheats.",
+      "icon": "https://raw.githubusercontent.com/bucanero/apollo-ps4/master/resources/icon0.png",
+      "parts": [
+        "https://github.com/bucanero/apollo-ps4/releases/download/v1.4.0/apollo-ps4.part1.rar",
+        "https://github.com/bucanero/apollo-ps4/releases/download/v1.4.0/apollo-ps4.part2.rar"
+      ],
+      "password": "ps4",
+      "pkg_name": "Apollo-SaveTool.pkg",
+      "size": 18874368
+    },
+    {
+      "id": "retroarch-ps4",
+      "name": "RetroArch",
+      "version": "1.19.1",
+      "category": "Emulators",
+      "description": "Frontend for emulators, game engines, and media players.",
+      "icon": "https://www.retroarch.com/images/retroarch-logo.png",
+      "url": "https://buildbot.libretro.com/stable/1.19.1/playstation/ps4/RetroArch.pkg",
+      "pkg_name": "RetroArch.pkg",
+      "size": 251658240
+    }
+  ]
+}

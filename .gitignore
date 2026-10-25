@@ -11,3 +11,6 @@ gtk-app/ps-ftp-downloader
 
 # Temp build folder
 .deb-build/
+
+# Notes
+update.txt
