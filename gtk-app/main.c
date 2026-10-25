@@ -214,6 +214,7 @@ static GListStore *g_catalog_store = NULL;
 static char g_catalog_sources[8][1024];
 static int  g_n_sources = 0;
 static GtkWidget *g_catalog_search_entry = NULL;
+static GtkWidget *g_dlps_search_entry = NULL;
 static GtkWidget *g_catalog_cat_dropdown = NULL;
 static GtkWidget *g_catalog_status_lbl = NULL;
 static GtkCustomFilter *g_catalog_cat_filter = NULL;
@@ -230,6 +231,7 @@ static void trigger_catalog_fetch_async(void);
 typedef struct AutoSession AutoSession;
 static gboolean is_uc_resolver_available(void);
 static void trigger_uc_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
+static void trigger_dlps_fetch(const char *query, int page);
 
 /* ═══════════════════════════════════════════════════════════
  * Utility: human-readable formatting
@@ -2737,7 +2739,22 @@ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     char *pass = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(g_entry_pass_single));
 G_GNUC_END_IGNORE_DEPRECATIONS
 
-    if (strstr(url, "downloadgameps3.net") || strstr(url, "dlpsgame.com") || strstr(url, "filecrypt.cc")) {
+    if (strstr(url, "dlpsgame.com/")) {
+        if (g_stack) {
+            gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "dlpsgame");
+            if (g_dlps_search_entry) {
+                gtk_editable_set_text(GTK_EDITABLE(g_dlps_search_entry), url);
+            }
+            trigger_dlps_fetch(url, 1);
+            show_toast("Apertura gioco da DLPSGame...");
+        }
+        if (pass) g_free(pass);
+        g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
+        gtk_window_destroy(GTK_WINDOW(dialog));
+        return;
+    }
+
+    if (strstr(url, "downloadgameps3.net") || strstr(url, "filecrypt.cc")) {
         if (g_uc_enabled && is_uc_resolver_available()) {
             trigger_uc_resolve(url, (name && name[0]) ? name : "Download", pass, NULL, NULL);
             if (pass) g_free(pass);
@@ -4611,7 +4628,6 @@ static GtkWidget *g_dlps_spinner = NULL;
 static GtkWidget *g_dlps_lbl_page = NULL;
 static GtkWidget *g_dlps_btn_prev = NULL;
 static GtkWidget *g_dlps_btn_next = NULL;
-static GtkWidget *g_dlps_search_entry = NULL;
 static GtkWidget *g_dlps_region_dropdown = NULL;
 static GtkWidget *g_dlps_console_dropdown = NULL;
 
@@ -4844,17 +4860,33 @@ static void extract_dlps_region(const char *decoded, const char *html_content, D
     }
 }
 
-static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame *out_games, int max_games, int region_filter) {
+static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame *out_games,
+                                 int max_games, int region_filter, gboolean is_search,
+                                 char *status_override, size_t status_override_size) {
     if (!json_data || json_len == 0 || max_games <= 0) return 0;
+    if (status_override && status_override_size > 0) status_override[0] = '\0';
     JsonParser *parser = json_parser_new();
     GError *err = NULL;
     int count = 0;
+    int max_cands = max_games * 4;
+    DlpsGame *all_candidates = calloc(max_cands, sizeof(DlpsGame));
+    int cand_count = 0;
+
     if (json_parser_load_from_data(parser, json_data, json_len, &err)) {
         JsonNode *root = json_parser_get_root(parser);
+        JsonArray *arr = NULL;
+        gboolean free_arr = FALSE;
         if (root && JSON_NODE_HOLDS_ARRAY(root)) {
-            JsonArray *arr = json_node_get_array(root);
+            arr = json_node_get_array(root);
+        } else if (root && JSON_NODE_HOLDS_OBJECT(root)) {
+            arr = json_array_new();
+            json_array_add_element(arr, json_node_copy(root));
+            free_arr = TRUE;
+        }
+
+        if (arr) {
             guint len = json_array_get_length(arr);
-            for (guint i = 0; i < len && count < max_games; i++) {
+            for (guint i = 0; i < len && cand_count < max_cands; i++) {
                 JsonNode *node = json_array_get_element(arr, i);
                 if (!JSON_NODE_HOLDS_OBJECT(node)) continue;
                 JsonObject *obj = json_node_get_object(node);
@@ -5049,38 +5081,73 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                     payload_games[payload_count++] = pg;
                 }
 
-                for (int p_idx = 0; p_idx < payload_count && count < max_games; p_idx++) {
-                    DlpsGame *pg = &payload_games[p_idx];
-
-                    /* Region filter check:
-                     * region_filter == 1 (Europa): only keep EUR
-                     * region_filter == 2 (America): only keep USA
-                     * region_filter == 3 (Giappone/Asia): only keep JPN / ASIA
-                     */
-                    if (region_filter == 1 && pg->region[0] && strcmp(pg->region, "EUR") != 0 && strcmp(pg->region, "EUROPE") != 0) {
-                        continue;
-                    }
-                    if (region_filter == 2 && pg->region[0] && strcmp(pg->region, "USA") != 0 && strcmp(pg->region, "AMERICA") != 0) {
-                        continue;
-                    }
-                    if (region_filter == 3 && pg->region[0] && strcmp(pg->region, "JPN") != 0 && strcmp(pg->region, "JAPAN") != 0 && strcmp(pg->region, "ASIA") != 0) {
-                        continue;
-                    }
-
-                    if (payload_count > 1 && pg->region[0] && !strstr(pg->title, pg->region)) {
-                        char clarified[256];
-                        snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
-                        strncpy(pg->title, clarified, sizeof(pg->title) - 1);
-                    }
-
-                    out_games[count++] = *pg;
+                for (int p_idx = 0; p_idx < payload_count && cand_count < max_cands; p_idx++) {
+                    all_candidates[cand_count++] = payload_games[p_idx];
                 }
             }
+            if (free_arr) json_array_unref(arr);
         }
     } else {
         if (err) g_error_free(err);
     }
     g_object_unref(parser);
+
+    /* Pass 1: Filter by region_filter */
+    if (region_filter > 0) {
+        for (int i = 0; i < cand_count && count < max_games; i++) {
+            DlpsGame *pg = &all_candidates[i];
+            gboolean match = FALSE;
+            if (region_filter == 1 && (strcmp(pg->region, "EUR") == 0 || strcmp(pg->region, "EUROPE") == 0)) {
+                match = TRUE;
+            } else if (region_filter == 2 && (strcmp(pg->region, "USA") == 0 || strcmp(pg->region, "AMERICA") == 0)) {
+                match = TRUE;
+            } else if (region_filter == 3 && (strcmp(pg->region, "JPN") == 0 || strcmp(pg->region, "JAPAN") == 0 || strcmp(pg->region, "ASIA") == 0)) {
+                match = TRUE;
+            }
+
+            if (match) {
+                if (pg->region[0] && !strstr(pg->title, pg->region)) {
+                    char clarified[256];
+                    snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
+                    strncpy(pg->title, clarified, sizeof(pg->title) - 1);
+                }
+                out_games[count++] = *pg;
+            }
+        }
+    } else {
+        for (int i = 0; i < cand_count && count < max_games; i++) {
+            DlpsGame *pg = &all_candidates[i];
+            if (pg->region[0] && !strstr(pg->title, pg->region)) {
+                char clarified[256];
+                snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
+                strncpy(pg->title, clarified, sizeof(pg->title) - 1);
+            }
+            out_games[count++] = *pg;
+        }
+    }
+
+    /* Fallback: if user performed a specific search and 0 games matched region filter,
+     * but candidate games were found for other regions (e.g. A Day Without Me [USA]):
+     * do NOT return empty! Show the games from other available regions so the user is not left in the dark.
+     */
+    if (count == 0 && cand_count > 0 && is_search) {
+        for (int i = 0; i < cand_count && count < max_games; i++) {
+            DlpsGame *pg = &all_candidates[i];
+            if (pg->region[0] && !strstr(pg->title, pg->region)) {
+                char clarified[256];
+                snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
+                strncpy(pg->title, clarified, sizeof(pg->title) - 1);
+            }
+            out_games[count++] = *pg;
+        }
+        if (status_override && status_override_size > 0 && count > 0) {
+            snprintf(status_override, status_override_size,
+                     "Disponibile per %s",
+                     out_games[0].region[0] ? out_games[0].region : "altra regione");
+        }
+    }
+
+    free(all_candidates);
     return count;
 }
 
@@ -5119,6 +5186,7 @@ typedef struct {
     int total_pages;
     int page;
     char error_msg[256];
+    char status_override[256];
 } DlpsFetchResult;
 
 typedef struct {
@@ -5155,7 +5223,13 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
 
     if (g_dlps_lbl_page) {
         char pbuf[512];
-        if (res->total_items > 0 || res->count > 0) {
+        if (res->status_override[0]) {
+            snprintf(pbuf, sizeof(pbuf), "Pagina %d di %d  •  %d %s  •  %s",
+                     g_dlps_current_page, g_dlps_total_pages,
+                     g_dlps_total_items,
+                     g_dlps_total_items == 1 ? "gioco" : "giochi",
+                     res->status_override);
+        } else if (res->total_items > 0 || res->count > 0) {
             const char *cons_suffix = "";
             if (g_dlps_console_filter == 1) cons_suffix = "  •  PS5";
             else if (g_dlps_console_filter == 2) cons_suffix = "  •  PS4";
@@ -5166,8 +5240,11 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
             if (g_dlps_region_filter == 1) reg_suffix = "  •  Europa";
             else if (g_dlps_region_filter == 2) reg_suffix = "  •  America";
             else if (g_dlps_region_filter == 3) reg_suffix = "  •  Giappone/Asia";
-            snprintf(pbuf, sizeof(pbuf), "Pagina %d di %d  •  %d giochi%s%s",
-                     g_dlps_current_page, g_dlps_total_pages, g_dlps_total_items, cons_suffix, reg_suffix);
+            snprintf(pbuf, sizeof(pbuf), "Pagina %d di %d  •  %d %s%s%s",
+                     g_dlps_current_page, g_dlps_total_pages,
+                     g_dlps_total_items,
+                     g_dlps_total_items == 1 ? "gioco" : "giochi",
+                     cons_suffix, reg_suffix);
         } else if (res->error_msg[0]) {
             snprintf(pbuf, sizeof(pbuf), "Errore: %s", res->error_msg);
         } else {
@@ -5184,6 +5261,48 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
     return G_SOURCE_REMOVE;
 }
 
+static gboolean dlps_extract_slug(const char *input, char *out_slug, size_t out_size) {
+    if (!input || !out_slug || out_size == 0) return FALSE;
+    out_slug[0] = '\0';
+
+    const char *p = input;
+    while (*p == ' ' || *p == '\t') p++;
+
+    const char *site = strstr(p, "dlpsgame.com/");
+    if (site) {
+        p = site + strlen("dlpsgame.com/");
+        while (*p == '/') p++;
+        size_t len = 0;
+        while (*p && *p != '/' && *p != '?' && *p != '#' && *p != ' ' && len < out_size - 1) {
+            out_slug[len++] = *p++;
+        }
+        out_slug[len] = '\0';
+        return (len > 0);
+    }
+
+    const char *c = p;
+    gboolean has_hyphen = FALSE;
+    gboolean valid = TRUE;
+    size_t len = 0;
+    while (*c) {
+        if (*c == '-') {
+            has_hyphen = TRUE;
+        } else if (!g_ascii_isalnum(*c) && *c != '_') {
+            valid = FALSE;
+            break;
+        }
+        len++;
+        c++;
+    }
+    if (valid && has_hyphen && len >= 3 && len < out_size) {
+        strncpy(out_slug, p, out_size - 1);
+        out_slug[out_size - 1] = '\0';
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
 static void *dlps_fetch_thread_fn(void *arg) {
     DlpsFetchReq *req = (DlpsFetchReq *)arg;
     CURL *c = curl_easy_init();
@@ -5197,27 +5316,11 @@ static void *dlps_fetch_thread_fn(void *arg) {
         return NULL;
     }
 
-    char fetch_url[1024];
-    char combined_query[300] = "";
-    if (req->query[0]) {
-        strncpy(combined_query, req->query, sizeof(combined_query) - 1);
-        if (req->region == 1) {
-            strncat(combined_query, " EUR", sizeof(combined_query) - strlen(combined_query) - 1);
-        } else if (req->region == 2) {
-            strncat(combined_query, " USA", sizeof(combined_query) - strlen(combined_query) - 1);
-        } else if (req->region == 3) {
-            strncat(combined_query, " JPN", sizeof(combined_query) - strlen(combined_query) - 1);
-        }
-    } else {
-        if (req->region == 1) {
-            strncpy(combined_query, "EUR", sizeof(combined_query) - 1);
-        } else if (req->region == 2) {
-            strncpy(combined_query, "USA", sizeof(combined_query) - 1);
-        } else if (req->region == 3) {
-            strncpy(combined_query, "JPN", sizeof(combined_query) - 1);
-        }
-    }
+    gboolean is_search = (req->query[0] != '\0');
+    char slug[256] = "";
+    gboolean is_slug = is_search && dlps_extract_slug(req->query, slug, sizeof(slug));
 
+    char fetch_url[1024] = "";
     int cat_id = 0;
     if (req->console == 1) cat_id = 63019;      /* PS5 */
     else if (req->console == 2) cat_id = 4370;  /* PS4 */
@@ -5229,46 +5332,126 @@ static void *dlps_fetch_thread_fn(void *arg) {
         snprintf(cat_param, sizeof(cat_param), "&categories=%d", cat_id);
     }
 
-    if (combined_query[0]) {
-        char *esc = curl_easy_escape(c, combined_query, 0);
-        snprintf(fetch_url, sizeof(fetch_url),
-                 "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d&search=%s%s&_fields=id,link,title,content,categories",
-                 req->per_page, req->page, esc ? esc : combined_query, cat_param);
-        if (esc) curl_free(esc);
-    } else {
-        snprintf(fetch_url, sizeof(fetch_url),
-                 "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d%s&_fields=id,link,title,content,categories",
-                 req->per_page, req->page, cat_param);
-    }
-
+    gboolean slug_success = FALSE;
     DlpsMem chunk = { malloc(1), 0 };
     int totals[2] = { 0, 0 };
 
-    curl_easy_setopt(c, CURLOPT_URL, fetch_url);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
-    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
-    curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
-    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+    /* 1. If input is a URL or slug, attempt direct slug lookup */
+    if (is_slug) {
+        snprintf(fetch_url, sizeof(fetch_url),
+                 "https://dlpsgame.com/wp-json/wp/v2/posts?slug=%s&_fields=id,link,title,content,categories",
+                 slug);
 
-    CURLcode res = curl_easy_perform(c);
-    curl_easy_cleanup(c);
+        curl_easy_setopt(c, CURLOPT_URL, fetch_url);
+        curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
 
-    if (res == CURLE_OK && chunk.data) {
-        res_data->total_items = totals[0];
-        res_data->total_pages = totals[1];
-        DlpsGame *games = calloc(req->per_page, sizeof(DlpsGame));
-        int n = parse_dlps_games_json(chunk.data, chunk.size, games, req->per_page, req->region);
-        res_data->games = games;
-        res_data->count = n;
-    } else {
-        snprintf(res_data->error_msg, sizeof(res_data->error_msg),
-                 "Errore connessione: %s", curl_easy_strerror(res));
+        CURLcode res = curl_easy_perform(c);
+        if (res == CURLE_OK && chunk.data && chunk.size > 10) {
+            const char *p = chunk.data;
+            while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
+            if (*p == '[' && *(p + 1) != ']') {
+                DlpsGame *games = calloc(req->per_page, sizeof(DlpsGame));
+                int n = parse_dlps_games_json(chunk.data, chunk.size, games, req->per_page, req->region,
+                                              is_search, res_data->status_override, sizeof(res_data->status_override));
+                if (n > 0) {
+                    slug_success = TRUE;
+                    res_data->total_items = totals[0] > 0 ? totals[0] : n;
+                    res_data->total_pages = totals[1] > 0 ? totals[1] : 1;
+                    res_data->games = games;
+                    res_data->count = n;
+                } else {
+                    free(games);
+                }
+            }
+        }
     }
 
+    /* 2. Full-text search or catalog browsing */
+    if (!slug_success) {
+        if (chunk.data) {
+            free(chunk.data);
+            chunk.data = malloc(1);
+            chunk.size = 0;
+        }
+        totals[0] = 0;
+        totals[1] = 0;
+
+        char clean_query[300] = "";
+        if (is_search) {
+            const char *src = req->query;
+            while (*src == ' ' || *src == '\t') src++;
+            const char *site = strstr(src, "dlpsgame.com/");
+            if (site) {
+                src = site + strlen("dlpsgame.com/");
+                while (*src == '/') src++;
+            }
+            size_t cq_len = 0;
+            while (*src && *src != '/' && *src != '?' && *src != '#' && cq_len < sizeof(clean_query) - 1) {
+                if (*src == '-' || *src == '_' || *src == '+') {
+                    clean_query[cq_len++] = ' ';
+                } else {
+                    clean_query[cq_len++] = *src;
+                }
+                src++;
+            }
+            clean_query[cq_len] = '\0';
+            g_strstrip(clean_query);
+        } else {
+            /* Browsing with empty query: filter by region string if set */
+            if (req->region == 1) {
+                strncpy(clean_query, "EUR", sizeof(clean_query) - 1);
+            } else if (req->region == 2) {
+                strncpy(clean_query, "USA", sizeof(clean_query) - 1);
+            } else if (req->region == 3) {
+                strncpy(clean_query, "JPN", sizeof(clean_query) - 1);
+            }
+        }
+
+        if (clean_query[0]) {
+            char *esc = curl_easy_escape(c, clean_query, 0);
+            snprintf(fetch_url, sizeof(fetch_url),
+                     "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d&search=%s%s&_fields=id,link,title,content,categories",
+                     req->per_page, req->page, esc ? esc : clean_query, cat_param);
+            if (esc) curl_free(esc);
+        } else {
+            snprintf(fetch_url, sizeof(fetch_url),
+                     "https://dlpsgame.com/wp-json/wp/v2/posts?per_page=%d&page=%d%s&_fields=id,link,title,content,categories",
+                     req->per_page, req->page, cat_param);
+        }
+
+        curl_easy_setopt(c, CURLOPT_URL, fetch_url);
+        curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36");
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+        curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 10L);
+        curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
+
+        CURLcode res = curl_easy_perform(c);
+        if (res == CURLE_OK && chunk.data) {
+            res_data->total_items = totals[0];
+            res_data->total_pages = totals[1];
+            DlpsGame *games = calloc(req->per_page, sizeof(DlpsGame));
+            int n = parse_dlps_games_json(chunk.data, chunk.size, games, req->per_page, req->region,
+                                          is_search, res_data->status_override, sizeof(res_data->status_override));
+            res_data->games = games;
+            res_data->count = n;
+        } else {
+            snprintf(res_data->error_msg, sizeof(res_data->error_msg),
+                     "Errore connessione: %s", curl_easy_strerror(res));
+        }
+    }
+
+    curl_easy_cleanup(c);
     if (chunk.data) free(chunk.data);
     g_free(req);
 
