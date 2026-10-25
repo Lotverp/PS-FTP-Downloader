@@ -1,22 +1,22 @@
 /*
  * PS FTP Downloader — GTK4 + libcurl
  *
- * Streams files directly from any HTTP(S) URL to a PlayStation console via FTP,
- * using a lock-based ring-buffer pipe — zero local disk usage.
+ * Trasferisce file direttamente da qualsiasi URL HTTP(S) a una console PlayStation via FTP,
+ * sfruttando un ring-buffer circolare in RAM protetto da lock — zero utilizzo di disco locale.
  *
- * Split-archive mode:
- *   Downloads multi-part archives (.rar/.zip/etc.) to a local temp dir,
- *   extracts them with 7zip, then uploads the resulting .pkg via FTP.
- *   All temporary files are deleted after the upload.
+ * Modalità archivi multi-parte (.rar / .zip / .7z):
+ *   Scarica le parti in una directory temporanea locale, le estrae con 7zip/unar,
+ *   quindi carica il file .pkg risultante via FTP sulla PlayStation.
+ *   Tutti i file temporanei vengono ripuliti al termine del trasferimento.
  *
- * Architecture:
- *   - Main thread: GTK4 UI only (all widget mutations happen here via g_idle_add)
- *   - Download thread: orchestrates probing + pipe + FTP upload
- *   - HTTP thread: fills the ring-buffer from the HTTP source
- *   - Archive thread: download parts → 7zip extract → FTP upload → cleanup
+ * Architettura multi-thread:
+ *   - Thread principale (Main UI): gestione esclusiva dei widget GTK4 (modifiche via g_idle_add)
+ *   - Thread download: orchestra probe iniziale, ring-buffer pipe e upload FTP
+ *   - Thread HTTP: alimenta il ring-buffer prelevando i dati dalla sorgente di rete
+ *   - Thread archivio: download parti → estrazione automatica → upload FTP → pulizia
  *
- * Build:    make
- * Requires: libgtk-4-dev, libcurl4-openssl-dev, build-essential, p7zip-full
+ * Compilazione: make
+ * Dipendenze:   libgtk-4-dev, libcurl4-openssl-dev, libjson-glib-dev, 7zip / p7zip-full
  */
 
 #include <gtk/gtk.h>
@@ -35,11 +35,11 @@
 #include <errno.h>
 
 /* ═══════════════════════════════════════════════════════════
- * Constants
+ * Costanti globali di configurazione
  * ═══════════════════════════════════════════════════════════ */
 
 #define APP_ID           "io.psftpdownloader.app"
-#define APP_VERSION      "1.3.4"
+#define APP_VERSION      "1.3.5"
 #define APP_GITHUB_URL   "https://github.com/Lotverp/PS-FTP-Downloader"
 
 #define FTP_HOST_DEFAULT "192.168.1.195"
@@ -49,70 +49,69 @@
 #define FTP_PASS_DEFAULT "anonymous@"
 
 #define MAX_DOWNLOADS    32
-#define PIPE_BUF_SIZE    (2 * 1024 * 1024)   /* 2 MB lock-based ring-buffer   */
-#define SPEED_SAMPLE_HZ  0.35                 /* progress update interval (s)  */
-#define SPEED_ALPHA      0.4                  /* EMA weight for old speed       */
-#define URL_MIN_LEN      5                    /* sanity threshold for URLs      */
-#define EXT_MAX_LEN      11                   /* "." + up to 10-char extension  */
+#define PIPE_BUF_SIZE    (2 * 1024 * 1024)   /* Ring-buffer circolare di 2 MB */
+#define SPEED_SAMPLE_HZ  0.35                 /* Intervallo campionamento velocità (s) */
+#define SPEED_ALPHA      0.4                  /* Peso EMA (Exponential Moving Average) */
+#define URL_MIN_LEN      5                    /* Lunghezza minima di validità URL */
+#define EXT_MAX_LEN      11                   /* "." + estensione fino a 10 caratteri */
 
-#define MAX_ARCHIVE_PARTS 64                  /* max parts for a split archive  */
+#define MAX_ARCHIVE_PARTS 64                  /* Massimo numero di parti per archivio */
 
-/* Convenience: set a curl option and silently discard the return value.
-   All options used here are compile-time constants that cannot fail. */
+/* Macro di utilità: imposta un'opzione curl scartando il valore di ritorno non nullo */
 #define CURL_SET(h, opt, val) (void)curl_easy_setopt((h), (opt), (val))
 
 /* ═══════════════════════════════════════════════════════════
- * Download state machine
+ * Macchina a stati del download
  * ═══════════════════════════════════════════════════════════ */
 
 typedef enum {
-    DL_QUEUED,      /* waiting to be picked up by a thread  */
-    DL_PROBING,     /* HEAD request + FTP size probe        */
-    DL_ACTIVE,      /* HTTP→pipe→FTP streaming in progress  */
-    DL_PAUSED,      /* user-requested pause                 */
-    DL_DONE,        /* fully transferred                    */
-    DL_ERROR,       /* unrecoverable error (resumable)      */
-    DL_CANCELLED,   /* user-cancelled                       */
-    /* ── Split-archive specific states ── */
-    DL_DOWNLOADING, /* downloading archive parts locally    */
-    DL_EXTRACTING,  /* 7zip merge+extract in progress       */
-    DL_UPLOADING    /* FTP upload of extracted .pkg         */
+    DL_QUEUED,      /* In coda: in attesa di elaborazione dal worker thread */
+    DL_PROBING,     /* Rilevamento: richiesta HEAD e probe dimensione su FTP */
+    DL_ACTIVE,      /* Attivo: streaming in tempo reale HTTP -> pipe -> FTP */
+    DL_PAUSED,      /* In pausa: sospeso su richiesta dell'utente */
+    DL_DONE,        /* Completato: file interamente trasferito su PS */
+    DL_ERROR,       /* Errore non recuperabile automaticamente (ripristinabile) */
+    DL_CANCELLED,   /* Annullato dall'utente */
+    /* ── Stati specifici per archivi suddivisi ── */
+    DL_DOWNLOADING, /* Download locale delle singole parti dell'archivio */
+    DL_EXTRACTING,  /* Estrazione e fusione con 7zip/unar in corso */
+    DL_UPLOADING    /* Upload via FTP del pacchetto .pkg estratto */
 } DlStatus;
 
-/* request_stop values written by the main thread, read by the worker */
+/* Valori di request_stop scritti dal thread principale e letti dal worker */
 #define STOP_NONE    0
 #define STOP_CANCEL  1
 #define STOP_PAUSE   2
 
 typedef struct {
-    /* ── Identity ─────────────────────────────────────────── */
+    /* ── Identità del download ────────────────────────────── */
     int        id;
     char       url[4096];
     char       dest_name[512];
     char       ext[32];
 
-    /* ── State ─────────────────────────────────────────────── */
+    /* ── Stato di avanzamento ─────────────────────────────── */
     DlStatus   status;
-    volatile int request_stop;  /* STOP_* — written by main, read by worker */
+    volatile int request_stop;  /* STOP_* — scritto dalla UI, letto dal worker */
 
-    /* ── Transfer metrics ──────────────────────────────────── */
+    /* ── Metriche di trasferimento ────────────────────────── */
     curl_off_t total_size;
     curl_off_t downloaded;
     curl_off_t resume_offset;
-    double     speed;           /* exponential moving average (B/s) */
-    double     eta;             /* seconds remaining, or -1         */
-    double     progress;        /* 0-100, or -1 if size unknown     */
+    double     speed;           /* Media mobile esponenziale (B/s) */
+    double     eta;             /* Secondi rimanenti stimati, oppure -1 */
+    double     progress;        /* Percentuale 0-100, oppure -1 se ignota */
 
-    /* ── Timing (monotonic) ─────────────────────────────────── */
+    /* ── Temporizzazione (clock monotonico) ─────────────────── */
     struct timespec start_time;
     struct timespec last_sample_time;
     curl_off_t      last_sample_bytes;
 
-    /* ── Error detail ──────────────────────────────────────── */
-    char error_msg[256];       /* current error; cleared on resume  */
-    char last_error_msg[256];  /* preserved across resumes for popup */
+    /* ── Dettaglio errori ─────────────────────────────────── */
+    char error_msg[256];       /* Errore corrente; azzerato al resume */
+    char last_error_msg[256];  /* Conservato tra i resume per il popup */
 
-    /* ── GTK widgets (main thread only) ────────────────────── */
+    /* ── Widget GTK (utilizzati solo nel thread UI principale) */
     GtkWidget *row_box;
     GtkWidget *lbl_name;
     GtkWidget *lbl_status;
@@ -165,22 +164,22 @@ static void free_download_if_ready(Download *dl) {
 static void *split_archive_thread_fn(void *arg);
 
 /* ═══════════════════════════════════════════════════════════
- * Global state
+ * Stato globale dell'applicazione
  * ═══════════════════════════════════════════════════════════ */
 
-/* Protected by dl_mutex; all array access must hold the lock. */
+/* Array protetto da dl_mutex: ogni accesso deve acquisire il lock */
 static Download        *downloads[MAX_DOWNLOADS];
 static int              n_downloads = 0;
 static pthread_mutex_t  dl_mutex    = PTHREAD_MUTEX_INITIALIZER;
 static int              next_id     = 1;
 
-/* FTP connection settings — written only via the Settings dialog. */
+/* Parametri di connessione FTP (modificabili dal dialog Impostazioni) */
 static char g_ftp_host[256] = FTP_HOST_DEFAULT;
 static int  g_ftp_port      = FTP_PORT_DEFAULT;
 static char g_ftp_dir[512]  = FTP_DIR_DEFAULT;
 static char g_ftp_user[256] = FTP_USER_DEFAULT;
 static char g_ftp_pass[256] = FTP_PASS_DEFAULT;
-static char g_tmp_dir[512]  = ""; /* if empty, use g_get_user_cache_dir() */
+static char g_tmp_dir[512]  = ""; /* Se vuota, usa g_get_user_cache_dir() */
 static char g_saved_passwords[1024] = "[DLPSGAME.COM],DLPSGAME.COM,dlpsgame.com,SuperPSX,superpsx";
 static char g_realdebrid_token[256] = "";
 static gboolean g_uc_enabled = TRUE;
@@ -189,14 +188,14 @@ static char g_uc_last_cookie[4096] = "";
 static char g_uc_last_user_agent[512] = "";
 static char g_uc_last_referer[2048] = "";
 
-/* Root-level GTK widgets kept for cross-function access. */
+/* Widget principali conservati per accesso rapido tra finestre */
 static GtkWidget *g_window;
 static GtkWidget *g_list_box;
 static GtkWidget *g_lbl_stats;
 static GtkWidget *g_lbl_sub;
 static GtkWidget *g_stack;
 
-/* Dialog entry refs (valid only while the respective dialog is open). */
+/* Riferimenti campi di input (validi mentre il relativo dialog è aperto) */
 static GtkWidget *g_entry_url;
 static GtkWidget *g_entry_name;
 static GtkWidget *g_entry_pass_single;
@@ -204,19 +203,18 @@ static GtkWidget *g_lbl_detected;
 static GtkWidget *g_set_host, *g_set_port, *g_set_dir, *g_set_user, *g_set_pass, *g_set_tmp, *g_set_saved_pass, *g_set_rd_token;
 static GtkWidget *g_chk_uc_enabled, *g_chk_uc_headless;
 
-/* Split-archive dialog refs. */
-static GtkWidget *g_arch_urls_box;   /* VBox containing one GtkEntry per URL  */
-static GtkWidget *g_arch_entry_name; /* destination .pkg filename             */
-static GtkWidget *g_arch_entry_pass; /* archive password (may be empty)       */
+/* Riferimenti dialog archivi multi-parte */
+static GtkWidget *g_arch_urls_box;   /* VBox contenente una riga GtkEntry per ciascun URL */
+static GtkWidget *g_arch_entry_name; /* Nome file finale .pkg sulla PS */
+static GtkWidget *g_arch_entry_pass; /* Password archivio (opzionale) */
 
-/* Catalog state */
+/* Stato del catalogo app/homebrew e giochi */
 static GListStore *g_catalog_store = NULL;
 static char g_catalog_sources[8][1024];
 static int  g_n_sources = 0;
 static GtkWidget *g_catalog_search_entry = NULL;
 static GtkWidget *g_dlps_search_entry = NULL;
 static GtkWidget *g_catalog_cat_dropdown = NULL;
-static GtkWidget *g_catalog_status_lbl = NULL;
 static GtkCustomFilter *g_catalog_cat_filter = NULL;
 static char g_selected_category[64] = "Tutte";
 static GtkWidget *g_toast_box = NULL;
@@ -236,7 +234,7 @@ static void trigger_onefichier_resolve(const char *url, const char *game_title, 
 static void trigger_dlps_fetch(const char *query, int page);
 
 /* ═══════════════════════════════════════════════════════════
- * Utility: human-readable formatting
+ * Utilità: formattazione leggibile di dimensioni, velocità ed ETA
  * ═══════════════════════════════════════════════════════════ */
 
 static void fmt_size(curl_off_t bytes, char *out, size_t n) {
@@ -264,7 +262,7 @@ static void fmt_eta(double secs, char *out, size_t n) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Utility: find a Download by ID (caller must hold dl_mutex)
+ * Utilità: ricerca di un Download per ID (richiede dl_mutex)
  * ═══════════════════════════════════════════════════════════ */
 
 static Download *find_download(int id) {
@@ -275,7 +273,7 @@ static Download *find_download(int id) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Status-bar statistics (main thread)
+ * Statistiche della barra di stato (thread UI principale)
  * ═══════════════════════════════════════════════════════════ */
 
 static void update_stats(void) {
@@ -300,10 +298,10 @@ static void update_stats(void) {
 
     char buf[256];
     if (total == 0)
-        snprintf(buf, sizeof(buf), "No transfers");
+        snprintf(buf, sizeof(buf), "Nessun trasferimento");
     else
         snprintf(buf, sizeof(buf),
-                 "Total: %d  Active: %d  Queued/Paused: %d  Completed: %d%s",
+                 "Totale: %d  Attivi: %d  In coda/Pausa: %d  Completati: %d%s",
                  total, active, queued, done,
                  errors ? "  (Errori)" : "");
 
@@ -318,7 +316,7 @@ static void update_stats(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * UI update payload — crosses the thread boundary via g_idle_add
+ * Payload aggiornamento interfaccia — inviato via g_idle_add
  * ═══════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -408,9 +406,9 @@ static gboolean update_row_ui(gpointer user_data) {
         dl->progress   = p->progress;
         dl->start_time = p->start_time;
         if (p->error_msg[0]) {
-            /* Keep last_error_msg intact so the popup works after a resume. */
-            strncpy(dl->error_msg,      p->error_msg, sizeof(dl->error_msg)      - 1);
-            strncpy(dl->last_error_msg, p->error_msg, sizeof(dl->last_error_msg) - 1);
+            /* Mantiene last_error_msg intatto per mostrare il popup anche dopo il resume */
+            g_strlcpy(dl->error_msg,      p->error_msg, sizeof(dl->error_msg));
+            g_strlcpy(dl->last_error_msg, p->error_msg, sizeof(dl->last_error_msg));
         }
     }
     pthread_mutex_unlock(&dl_mutex);
@@ -552,18 +550,18 @@ static void post_update(Download *dl) {
     p->eta        = dl->eta;
     p->progress   = dl->progress;
     p->start_time = dl->start_time;
-    strncpy(p->error_msg, dl->error_msg, sizeof(p->error_msg) - 1);
-    strncpy(p->dest_name, dl->dest_name, sizeof(p->dest_name) - 1);
+    g_strlcpy(p->error_msg, dl->error_msg, sizeof(p->error_msg));
+    g_strlcpy(p->dest_name, dl->dest_name, sizeof(p->dest_name));
 
     g_idle_add(update_row_ui, p);
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Ring-buffer pipe  (HTTP producer ↔ FTP consumer)
+ * Ring-buffer circolare (Produttore HTTP ↔ Consumatore FTP)
  *
- * A fixed-size circular byte buffer protected by a mutex and two
- * condition variables: cond_space (wakes producer when space opens)
- * and cond_data (wakes consumer when data arrives).
+ * Buffer circolare in RAM a dimensione fissa protetto da mutex e
+ * due variabili di condizione: cond_space (risveglia il produttore)
+ * e cond_data (risveglia il consumatore all'arrivo dei dati).
  * ═══════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -717,7 +715,7 @@ static size_t ftp_read_cb(char *ptr, size_t size, size_t nmemb, void *userdata) 
 }
 
 /* ═══════════════════════════════════════════════════════════
- * HTTP thread — fills the pipe from the HTTP source
+ * Thread HTTP — preleva i dati dalla sorgente di rete verso la pipe
  * ═══════════════════════════════════════════════════════════ */
 
 static void curl_common_opts(CURL *c, const char *url) {
@@ -774,13 +772,13 @@ static void *http_thread_fn(void *arg) {
         char unesc[2048] = "";
         if (strncmp(dl->url, "file://", 7) == 0) {
             char *un = g_uri_unescape_string(dl->url + 7, NULL);
-            strncpy(unesc, un ? un : lp, sizeof(unesc) - 1);
+            g_strlcpy(unesc, un ? un : lp, sizeof(unesc));
             if (un) g_free(un);
             lp = unesc;
         }
         FILE *f = fopen(lp, "rb");
         if (!f) {
-            strncpy(dl->error_msg, "Impossibile aprire il file locale", sizeof(dl->error_msg) - 1);
+            g_strlcpy(dl->error_msg, "Impossibile aprire il file locale", sizeof(dl->error_msg));
             pthread_mutex_lock(&pipe->mutex);
             pipe->http_done = 1;
             pthread_cond_broadcast(&pipe->cond_data);
@@ -873,7 +871,7 @@ static void *http_thread_fn(void *arg) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * FTP progress callback — throttled speed/ETA + UI dispatch
+ * Callback di progresso FTP — calcolo velocità, ETA e UI
  * ═══════════════════════════════════════════════════════════ */
 
 static int xfer_progress_cb(void *clientp,
@@ -925,14 +923,14 @@ static int xfer_progress_cb(void *clientp,
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Main download thread
+ * Thread di download diretto streaming
  *
- * Sequence:
- *   1. HEAD request  → resolve total file size
- *   2. FTP SIZE probe → determine resume offset (partial remote file)
- *   3. Spawn HTTP thread that fills the ring-buffer
- *   4. FTP STOR (append if resuming) drains the ring-buffer
- *   5. Cleanup and post final status
+ * Flusso operativo:
+ *   1. Richiesta HEAD   → recupero dimensione totale del file
+ *   2. Probe SIZE su FTP → offset di resume (se il file esiste già)
+ *   3. Avvio thread HTTP che alimenta il ring-buffer
+ *   4. Invio dati FTP STOR (in append in caso di ripresa)
+ *   5. Pulizia risorse e notifica dello stato finale
  * ═══════════════════════════════════════════════════════════ */
 
 /* Build clean FTP URL preserving path slashes (e.g. data/pkg) and escaping components.
@@ -994,7 +992,7 @@ static void build_ftp_url(char *out, size_t out_sz,
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Settings persistence & Remote Directory Management
+ * Persistenza impostazioni e gestione directory remota FTP
  * ═══════════════════════════════════════════════════════════ */
 
 static char *get_config_path(void) {
@@ -1176,7 +1174,7 @@ static gboolean ftp_ensure_dir(const char *host, int port,
 
     if (err_buf && err_sz > 0) {
         if (ok) {
-            snprintf(err_buf, err_sz, "Connessione riuscita! Cartella /%s pronta.", full_dir);
+            snprintf(err_buf, err_sz, "Connessione riuscita! Cartella /%.450s pronta.", full_dir);
         } else {
             snprintf(err_buf, err_sz, "Errore FTP (%d): %s", res, curl_easy_strerror(res));
         }
@@ -1236,7 +1234,7 @@ static void *test_ftp_worker(void *arg) {
 
     struct { gboolean ok; char msg[512]; GtkWidget *lbl; GtkWidget *btn; } *res = malloc(sizeof(*res));
     res->ok = ok;
-    strncpy(res->msg, err, sizeof(res->msg) - 1);
+    g_strlcpy(res->msg, err, sizeof(res->msg));
     res->lbl = data->lbl_result;
     res->btn = data->btn;
     g_idle_add(on_test_done_idle, res);
@@ -1259,11 +1257,11 @@ static void on_test_clicked(GtkButton *btn, gpointer user_data) {
     gtk_widget_remove_css_class(lbl_result, "error-label");
 
     TestFtpData *td = malloc(sizeof(TestFtpData));
-    strncpy(td->host, (h && h[0]) ? h : g_ftp_host, sizeof(td->host) - 1);
+    g_strlcpy(td->host, (h && h[0]) ? h : g_ftp_host, sizeof(td->host));
     td->port = (p && atoi(p) > 0) ? atoi(p) : g_ftp_port;
-    strncpy(td->dir, (d && d[0]) ? d : g_ftp_dir, sizeof(td->dir) - 1);
-    strncpy(td->user, (u && u[0]) ? u : g_ftp_user, sizeof(td->user) - 1);
-    strncpy(td->pass, (pass && pass[0]) ? pass : g_ftp_pass, sizeof(td->pass) - 1);
+    g_strlcpy(td->dir, (d && d[0]) ? d : g_ftp_dir, sizeof(td->dir));
+    g_strlcpy(td->user, (u && u[0]) ? u : g_ftp_user, sizeof(td->user));
+    g_strlcpy(td->pass, (pass && pass[0]) ? pass : g_ftp_pass, sizeof(td->pass));
     td->lbl_result = lbl_result;
     td->btn = GTK_WIDGET(btn);
 
@@ -1285,7 +1283,7 @@ static void *download_thread_fn_internal(void *arg) {
         char unesc[2048] = "";
         if (strncmp(dl->url, "file://", 7) == 0) {
             char *un = g_uri_unescape_string(dl->url + 7, NULL);
-            strncpy(unesc, un ? un : lp, sizeof(unesc) - 1);
+            g_strlcpy(unesc, un ? un : lp, sizeof(unesc));
             if (un) g_free(un);
             lp = unesc;
         }
@@ -1293,7 +1291,7 @@ static void *download_thread_fn_internal(void *arg) {
         if (stat(lp, &st) == 0) {
             dl->total_size = st.st_size;
         } else {
-            snprintf(dl->error_msg, sizeof(dl->error_msg), "File locale non trovato: %s", lp);
+            snprintf(dl->error_msg, sizeof(dl->error_msg), "File locale non trovato: %.200s", lp);
             dl->status = DL_ERROR;
             post_update(dl);
             return NULL;
@@ -1474,19 +1472,19 @@ static void *download_thread_fn(void *arg) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * CSS loader
+ * Caricamento fogli di stile CSS
  *
- * Searches for style.css in:
- *   1. Directory of the running executable  (dev / portable)
- *   2. /usr/share/ps-ftp-downloader/        (installed .deb)
- *   3. /usr/local/share/ps-ftp-downloader/  (manual install)
- *   4. CWD "style.css"                      (last resort)
+ * Ricerca style.css in ordine di priorità:
+ *   1. Directory dell'eseguibile avviato (sviluppo / versione portabile)
+ *   2. /usr/share/ps-ftp-downloader/        (pacchetto .deb di sistema)
+ *   3. /usr/local/share/ps-ftp-downloader/  (installazione manuale)
+ *   4. Directory corrente "style.css"
  * ═══════════════════════════════════════════════════════════ */
 
 static void load_css(void) {
     char exe_dir_css[4096] = "";
 
-    /* Resolve path of the running binary to derive its directory. */
+    /* Ricava il percorso del binario per trovare i file assets locali */
     char exe_path[4096] = "";
     ssize_t len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
     if (len > 0) {
@@ -1526,16 +1524,16 @@ static void load_css(void) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Error popup (main thread) — shown when the user clicks ERROR
+ * Popup dettagli errore (thread principale)
  * ═══════════════════════════════════════════════════════════ */
 
 static void show_error_popup(int dl_id) {
-    char msg[512] = "No additional error information available.";
+    char msg[512] = "Nessuna informazione aggiuntiva sull'errore disponibile.";
 
     pthread_mutex_lock(&dl_mutex);
     Download *dl = find_download(dl_id);
     if (dl) {
-        /* Prefer last_error_msg: still set after the user hits Resume. */
+        /* Preferisce last_error_msg: conservato anche dopo che l'utente clicca Ripristina */
         const char *src = dl->last_error_msg[0] ? dl->last_error_msg
                                                  : dl->error_msg;
         if (src && src[0])
@@ -1544,7 +1542,7 @@ static void show_error_popup(int dl_id) {
     pthread_mutex_unlock(&dl_mutex);
 
     GtkWidget *dialog = gtk_window_new();
-    gtk_window_set_title(GTK_WINDOW(dialog), "Error Details");
+    gtk_window_set_title(GTK_WINDOW(dialog), "Dettagli Errore");
     gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
     gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(g_window));
     gtk_widget_set_size_request(dialog, 400, -1);
@@ -1560,7 +1558,7 @@ static void show_error_popup(int dl_id) {
     gtk_label_set_wrap(GTK_LABEL(lbl), TRUE);
     gtk_box_append(GTK_BOX(box), lbl);
 
-    GtkWidget *btn = gtk_button_new_with_label("Close");
+    GtkWidget *btn = gtk_button_new_with_label("Chiudi");
     gtk_widget_add_css_class(btn, "btn-primary");
     g_signal_connect_swapped(btn, "clicked", G_CALLBACK(gtk_window_destroy), dialog);
     gtk_box_append(GTK_BOX(box), btn);
@@ -1570,7 +1568,7 @@ static void show_error_popup(int dl_id) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Download row button callbacks
+ * Callback dei pulsanti di controllo della riga di download
  * ═══════════════════════════════════════════════════════════ */
 
 /* Retrieve the download ID stored on a button via g_object_set_data. */
@@ -1771,7 +1769,7 @@ static void on_error_badge_clicked(GtkGestureClick *gesture, int n_press,
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Download row factory
+ * Factory creazione widget per riga di download
  * ═══════════════════════════════════════════════════════════ */
 
 /* Helper: create a small action button, bind its dl-id, attach a signal. */
@@ -1874,15 +1872,15 @@ static GtkWidget *create_download_row(Download *dl) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Split-archive worker thread
+ * Worker thread archivi multi-parte (.rar / .zip / .7z)
  *
- * Sequence:
- *   1. Create a unique temp directory under ARCHIVE_TMP_DIR
- *   2. Download every part URL into that directory (curl)
- *   3. Run 7zip to extract the first part (auto-resolves all parts)
- *   4. Find the resulting .pkg file
- *   5. Upload the .pkg via FTP using the existing streaming logic
- *   6. Delete the temp directory and all its contents
+ * Flusso operativo:
+ *   1. Creazione directory temporanea dedicata
+ *   2. Download di ciascuna parte dell'archivio (curl)
+ *   3. Estrazione automatica della prima parte con 7zip/unar
+ *   4. Individuazione del pacchetto .pkg estratto
+ *   5. Caricamento su PlayStation via FTP
+ *   6. Eliminazione completa dei file temporanei locali
  * ═══════════════════════════════════════════════════════════ */
 
 
@@ -1978,16 +1976,7 @@ static int part_progress_cb(void *clientp,
     return 0;
 }
 
-/* ── FTP upload progress reused from the main flow ── */
-static int sa_ftp_progress_cb(void *clientp,
-                               curl_off_t dltotal, curl_off_t dlnow,
-                               curl_off_t ultotal, curl_off_t ulnow)
-{
-    (void)dltotal; (void)dlnow;
-    return xfer_progress_cb(clientp, 0, 0, ultotal, ulnow);
-}
-
-/* ── Recursive directory removal ── */
+/* ── Rimozione ricorsiva della directory temporanea ── */
 static void rm_dir_recursive(const char *path) {
     char *argv[] = { "rm", "-rf", (char *)path, NULL };
     g_spawn_sync(NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, NULL, NULL, NULL);
@@ -2276,16 +2265,16 @@ static void *split_archive_thread_fn_internal(void *arg) {
     post_update(dl);
 
     {
-        gboolean is_rar = (part_paths[0] && strcasestr(part_paths[0], ".rar") != NULL);
+        gboolean is_rar = (part_paths[0][0] && strcasestr(part_paths[0], ".rar") != NULL);
         const char *rar_bins[] = { "7z", "7zz", "unar", "unrar", NULL };
         const char *gen_bins[] = { "7z", "7zz", "unar", "7za", "unrar", NULL };
         const char **bins = is_rar ? rar_bins : gen_bins;
 
-        /* Build list of candidate passwords to try:
-         * 1. sa->password (if set)
-         * 2. empty string "" (unencrypted archive)
-         * 3. [DLPSGAME.COM], DLPSGAME.COM, dlpsgame.com, SuperPSX
-         * 4. user saved passwords from settings
+        /* Costruisce l'elenco delle password candidate da testare:
+         * 1. sa->password (se definita dall'utente o dal gioco)
+         * 2. stringa vuota "" (archivio non protetto)
+         * 3. password note di default: [DLPSGAME.COM], DLPSGAME.COM, dlpsgame.com, SuperPSX, superpsx
+         * 4. password personalizzate salvate nelle impostazioni
          */
         GPtrArray *cand_pass = g_ptr_array_new_with_free_func(g_free);
         if (sa->password[0]) g_ptr_array_add(cand_pass, g_strdup(sa->password));
@@ -2329,12 +2318,12 @@ static void *split_archive_thread_fn_internal(void *arg) {
                 ret = run_extract(bins[b], sa->tmp_dir, curr_pass, part_paths[0],
                                   tmp_err, sizeof(tmp_err));
                 if (ret == 0) {
-                    if (curr_pass[0]) strncpy(sa->password, curr_pass, sizeof(sa->password) - 1);
+                    if (curr_pass[0]) g_strlcpy(sa->password, curr_pass, sizeof(sa->password));
                     break;
                 }
                 if (ret != -1) {
                     last_meaningful_ret = ret;
-                    strncpy(best_err, tmp_err, sizeof(best_err) - 1);
+                    g_strlcpy(best_err, tmp_err, sizeof(best_err));
                 }
             }
             if (ret == 0) break;
@@ -2343,9 +2332,9 @@ static void *split_archive_thread_fn_internal(void *arg) {
 
         if (ret != 0) {
             if (last_meaningful_ret == -1) {
-                snprintf(dl->error_msg, sizeof(dl->error_msg), "No extraction tool found. Please install 7zip or unar.");
+                snprintf(dl->error_msg, sizeof(dl->error_msg), "Nessun tool di estrazione trovato. Installa 7zip o unar.");
             } else {
-                strncpy(dl->error_msg, best_err, sizeof(dl->error_msg) - 1);
+                g_strlcpy(dl->error_msg, best_err, sizeof(dl->error_msg));
             }
             dl->status = DL_ERROR;
             post_update(dl);
@@ -2480,10 +2469,9 @@ static void *split_archive_thread_fn(void *arg) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * URL probe (background thread)
+ * Rilevamento URL in background (Probe thread)
  *
- * Fires a HEAD request against the URL entered by the user
- * and posts back the detected extension and file size.
+ * Esegue una richiesta HEAD per determinare estensione e dimensione.
  * ═══════════════════════════════════════════════════════════ */
 
 typedef struct { char url[4096]; } ProbeArgs;
@@ -2526,7 +2514,7 @@ static void *probe_thread_fn(void *arg) {
         char unesc[2048] = "";
         if (strncmp(a->url, "file://", 7) == 0) {
             char *un = g_uri_unescape_string(a->url + 7, NULL);
-            strncpy(unesc, un ? un : lp, sizeof(unesc) - 1);
+            g_strlcpy(unesc, un ? un : lp, sizeof(unesc));
             if (un) g_free(un);
             lp = unesc;
         }
@@ -2537,8 +2525,8 @@ static void *probe_thread_fn(void *arg) {
             char ext[32] = "";
             const char *dot = strrchr(lp, '.');
             if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN)
-                strncpy(ext, dot + 1, sizeof(ext) - 1);
-            strncpy(r->ext, ext, sizeof(r->ext) - 1);
+                g_strlcpy(ext, dot + 1, sizeof(ext));
+            g_strlcpy(r->ext, ext, sizeof(r->ext));
             g_idle_add(do_probe_idle, r);
             free(a);
             return NULL;
@@ -2569,14 +2557,14 @@ static void *probe_thread_fn(void *arg) {
     char ext[32] = "";
     if (eff_url) {
         char tmp[4096];
-        strncpy(tmp, eff_url, sizeof(tmp) - 1);
+        g_strlcpy(tmp, eff_url, sizeof(tmp));
         char *q = strchr(tmp, '?');
         if (q) *q = '\0';
         char *unescaped = g_uri_unescape_string(tmp, NULL);
         const char *work = unescaped ? unescaped : tmp;
         const char *dot = strrchr(work, '.');
         if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN)
-            strncpy(ext, dot + 1, sizeof(ext) - 1);
+            g_strlcpy(ext, dot + 1, sizeof(ext));
         if (unescaped) g_free(unescaped);
     }
 
@@ -2584,7 +2572,7 @@ static void *probe_thread_fn(void *arg) {
     free(a);
 
     ProbeResult *r = malloc(sizeof(ProbeResult));
-    strncpy(r->ext, ext, sizeof(r->ext) - 1);
+    g_strlcpy(r->ext, ext, sizeof(r->ext));
     r->size = cl;
     g_idle_add(do_probe_idle, r);
     return NULL;
@@ -2594,6 +2582,7 @@ static guint g_probe_timeout_id = 0;
 static char *g_probe_pending_url = NULL;
 
 static gboolean do_probe_timeout(gpointer user_data) {
+    (void)user_data;
     if (!g_probe_pending_url) return G_SOURCE_REMOVE;
 
     if (g_ascii_strncasecmp(g_probe_pending_url, "chrome://", 9) == 0 ||
@@ -2659,27 +2648,26 @@ static gboolean is_known_ext(const char *ext) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Shared helper: extract a file extension from a URL path
+ * Utilità condivisa: estrazione estensione da URL
  * ═══════════════════════════════════════════════════════════ */
 
 static void extract_url_ext(const char *url, char *ext, size_t ext_size) {
     if (!url || !ext || ext_size == 0) return;
     ext[0] = '\0';
     char tmp[4096];
-    strncpy(tmp, url, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
+    g_strlcpy(tmp, url, sizeof(tmp));
     char *q = strchr(tmp, '?');
     if (q) *q = '\0';
     char *unescaped = g_uri_unescape_string(tmp, NULL);
     const char *work = unescaped ? unescaped : tmp;
     const char *dot = strrchr(work, '.');
     if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN)
-        strncpy(ext, dot + 1, ext_size - 1);
+        g_strlcpy(ext, dot + 1, ext_size);
     if (unescaped) g_free(unescaped);
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Download creation helpers
+ * Funzioni di inizializzazione ed avvio dei download
  * ═══════════════════════════════════════════════════════════ */
 
 static Download *start_single_download(const char *url,
@@ -2753,9 +2741,9 @@ static Download *start_single_download(const char *url,
     dl->id         = next_id++;
     dl->status     = DL_QUEUED;
     dl->total_size = -1;
-    strncpy(dl->url,       actual_url, sizeof(dl->url)       - 1);
-    strncpy(dl->dest_name, full_name,  sizeof(dl->dest_name) - 1);
-    strncpy(dl->ext,       det_ext,    sizeof(dl->ext)       - 1);
+    g_strlcpy(dl->url,       actual_url, sizeof(dl->url));
+    g_strlcpy(dl->dest_name, full_name,  sizeof(dl->dest_name));
+    g_strlcpy(dl->ext,       det_ext,    sizeof(dl->ext));
     downloads[n_downloads++] = dl;
     pthread_mutex_unlock(&dl_mutex);
 
@@ -2771,9 +2759,9 @@ static Download *start_single_download(const char *url,
     if (strcasecmp(det_ext, "rar") == 0 || strcasecmp(det_ext, "zip") == 0 || strcasecmp(det_ext, "7z") == 0) {
         SplitArchiveArgs *sa = calloc(1, sizeof(SplitArchiveArgs));
         sa->n_urls = 1;
-        strncpy(sa->urls[0], actual_url, SA_URL_LEN - 1);
+        g_strlcpy(sa->urls[0], actual_url, sizeof(sa->urls[0]));
         if (password && password[0]) {
-            strncpy(sa->password, password, sizeof(sa->password) - 1);
+            g_strlcpy(sa->password, password, sizeof(sa->password));
         }
 
         char dest_pkg[SA_NAME_LEN];
@@ -2782,14 +2770,14 @@ static Download *start_single_download(const char *url,
         if (dot) snprintf(dot, sizeof(dest_pkg) - (dot - dest_pkg), ".pkg");
         else snprintf(dest_pkg + strlen(dest_pkg), sizeof(dest_pkg) - strlen(dest_pkg), ".pkg");
 
-        strncpy(sa->pkg_name, dest_pkg, sizeof(sa->pkg_name) - 1);
-        strncpy(dl->dest_name, dest_pkg, sizeof(dl->dest_name) - 1);
+        g_strlcpy(sa->pkg_name, dest_pkg, sizeof(sa->pkg_name));
+        g_strlcpy(dl->dest_name, dest_pkg, sizeof(dl->dest_name));
         sa->dl_id = dl->id;
         dl->sa_args = sa;
 
         const char *base_cache_dir = g_tmp_dir[0] ? g_tmp_dir : g_get_user_cache_dir();
         char safe[64] = "";
-        strncpy(safe, dest_pkg, sizeof(safe) - 1);
+        g_strlcpy(safe, dest_pkg, sizeof(safe));
         for (char *p = safe; *p; p++)
             if (*p == '/' || *p == ' ' || *p == '\'' || *p == '"') *p = '_';
         snprintf(sa->tmp_dir, sizeof(sa->tmp_dir),
@@ -2830,14 +2818,14 @@ static Download *start_split_download(const char **urls, int n,
     else
         snprintf(final_pkg, sizeof(final_pkg), "%s.pkg", pkg_name);
 
-    strncpy(sa->pkg_name, final_pkg, sizeof(sa->pkg_name) - 1);
+    g_strlcpy(sa->pkg_name, final_pkg, sizeof(sa->pkg_name));
     if (password && password[0]) {
-        strncpy(sa->password, password, sizeof(sa->password) - 1);
+        g_strlcpy(sa->password, password, sizeof(sa->password));
     }
 
     const char *base_cache_dir = g_tmp_dir[0] ? g_tmp_dir : g_get_user_cache_dir();
     char safe[64] = "";
-    strncpy(safe, final_pkg, sizeof(safe) - 1);
+    g_strlcpy(safe, final_pkg, sizeof(safe));
     for (char *p = safe; *p; p++)
         if (*p == '/' || *p == ' ' || *p == '\'' || *p == '"') *p = '_';
     snprintf(sa->tmp_dir, sizeof(sa->tmp_dir),
@@ -2862,9 +2850,9 @@ static Download *start_split_download(const char **urls, int n,
     dl->progress   = -1.0;
     dl->eta        = -1.0;
 
-    strncpy(dl->dest_name, final_pkg, sizeof(dl->dest_name) - 1);
-    snprintf(dl->url, sizeof(dl->url), "[Split archive — %d part%s]",
-             sa->n_urls, sa->n_urls == 1 ? "" : "s");
+    g_strlcpy(dl->dest_name, final_pkg, sizeof(dl->dest_name));
+    snprintf(dl->url, sizeof(dl->url), "[Archivio diviso — %d part%s]",
+             sa->n_urls, sa->n_urls == 1 ? "e" : "i");
 
     sa->dl_id = dl->id;
     dl->sa_args = sa;
@@ -2887,7 +2875,7 @@ static Download *start_split_download(const char **urls, int n,
 }
 
 /* ═══════════════════════════════════════════════════════════
- * "New Download" dialog
+ * Finestra di dialogo "Nuovo Download Singolo"
  * ═══════════════════════════════════════════════════════════ */
 
 static void on_add_dialog_response(GtkDialog *dialog, int response,
@@ -3122,8 +3110,8 @@ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 G_GNUC_END_IGNORE_DEPRECATIONS
     gtk_widget_add_css_class(g_entry_pass_single, "form-entry");
 
-    /* FTP destination info */
-    char ftp_info[512];
+    /* Informazioni destinazione FTP */
+    char ftp_info[1024];
     snprintf(ftp_info, sizeof(ftp_info), "Destinazione → ftp://%s:%d/%s/",
              g_ftp_host, g_ftp_port, g_ftp_dir);
     GtkWidget *lbl_ftp = gtk_label_new(ftp_info);
@@ -3159,7 +3147,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Undetected ChromeDriver (UC) Bot Resolver helpers
+ * Integrazione Undetected ChromeDriver (UC) per bypass anti-bot
  * ═══════════════════════════════════════════════════════════ */
 
 static const char *get_python_binary(void) {
@@ -3170,12 +3158,12 @@ static const char *get_python_binary(void) {
     char venv_py[512];
     snprintf(venv_py, sizeof(venv_py), "%s/ps-ftp-downloader/venv/bin/python3", data_dir);
     if (access(venv_py, X_OK) == 0) {
-        strncpy(py_path, venv_py, sizeof(py_path) - 1);
+        g_strlcpy(py_path, venv_py, sizeof(py_path));
         return py_path;
     }
 
     if (system("which python3 >/dev/null 2>&1") == 0) {
-        strncpy(py_path, "python3", sizeof(py_path) - 1);
+        g_strlcpy(py_path, "python3", sizeof(py_path));
         return py_path;
     }
 
@@ -3295,7 +3283,7 @@ static void on_setup_uc_clicked(GtkButton *btn, gpointer user_data) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Settings dialog
+ * Finestra di dialogo Impostazioni
  * ═══════════════════════════════════════════════════════════ */
 
 static void on_settings_response(GtkDialog *dialog, int response,
@@ -3321,23 +3309,23 @@ static void on_settings_response(GtkDialog *dialog, int response,
             size_t blen = strlen(buf);
             while (blen > 0 && buf[blen - 1] == '/') buf[--blen] = '\0';
             if (buf[0])
-                strncpy(g_ftp_dir, buf, sizeof(g_ftp_dir) - 1);
+                g_strlcpy(g_ftp_dir, buf, sizeof(g_ftp_dir));
             else
-                strncpy(g_ftp_dir, FTP_DIR_DEFAULT, sizeof(g_ftp_dir) - 1);
+                g_strlcpy(g_ftp_dir, FTP_DIR_DEFAULT, sizeof(g_ftp_dir));
         }
 
-        strncpy(g_ftp_user,
-                (user && user[0]) ? user : FTP_USER_DEFAULT,
-                sizeof(g_ftp_user) - 1);
-        strncpy(g_ftp_pass,
-                (pass && pass[0]) ? pass : FTP_PASS_DEFAULT,
-                sizeof(g_ftp_pass) - 1);
-        if (tmp && tmp[0]) strncpy(g_tmp_dir, tmp, sizeof(g_tmp_dir) - 1);
-        if (saved_pass) strncpy(g_saved_passwords, saved_pass, sizeof(g_saved_passwords) - 1);
+        g_strlcpy(g_ftp_user,
+                  (user && user[0]) ? user : FTP_USER_DEFAULT,
+                  sizeof(g_ftp_user));
+        g_strlcpy(g_ftp_pass,
+                  (pass && pass[0]) ? pass : FTP_PASS_DEFAULT,
+                  sizeof(g_ftp_pass));
+        if (tmp && tmp[0]) g_strlcpy(g_tmp_dir, tmp, sizeof(g_tmp_dir));
+        if (saved_pass) g_strlcpy(g_saved_passwords, saved_pass, sizeof(g_saved_passwords));
         if (g_set_rd_token && GTK_IS_EDITABLE(g_set_rd_token)) {
             const char *rd = gtk_editable_get_text(GTK_EDITABLE(g_set_rd_token));
             if (rd) {
-                strncpy(g_realdebrid_token, rd, sizeof(g_realdebrid_token) - 1);
+                g_strlcpy(g_realdebrid_token, rd, sizeof(g_realdebrid_token));
                 g_strstrip(g_realdebrid_token);
             }
         }
@@ -3349,7 +3337,7 @@ static void on_settings_response(GtkDialog *dialog, int response,
         save_settings();
 
         if (g_lbl_sub && GTK_IS_WIDGET(g_lbl_sub)) {
-            char sub[512];
+            char sub[1024];
             snprintf(sub, sizeof(sub), "ftp://%s:%d/%s", g_ftp_host, g_ftp_port, g_ftp_dir);
             gtk_label_set_text(GTK_LABEL(g_lbl_sub), sub);
         }
@@ -3467,7 +3455,7 @@ static void show_settings_dialog(GtkWindow *parent) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Split-archive dialog
+ * Finestra di dialogo per download archivi multi-parte
  * ═══════════════════════════════════════════════════════════ */
 
 static void on_arch_dialog_response(GtkDialog *dialog, int response,
@@ -3533,12 +3521,12 @@ G_GNUC_END_IGNORE_DEPRECATIONS
     gtk_window_destroy(GTK_WINDOW(dialog));
 }
 
-/* ── Build a numbered URL row: ["N."] + [GtkEntry] ── */
+/* ── Costruzione riga URL numerata: ["N."] + [GtkEntry] ── */
 static GtkWidget *make_url_row(int n) {
     GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_hexpand(row, TRUE);
 
-    char num_str[8];
+    char num_str[16];
     snprintf(num_str, sizeof(num_str), "%d.", n);
     GtkWidget *lbl = gtk_label_new(num_str);
     gtk_widget_add_css_class(lbl, "url-slot-num");
@@ -3649,9 +3637,9 @@ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 G_GNUC_END_IGNORE_DEPRECATIONS
     gtk_widget_add_css_class(g_arch_entry_pass, "form-entry");
 
-    /* ── FTP destination info ── */
-    char ftp_info[512];
-    snprintf(ftp_info, sizeof(ftp_info), "FTP destination → ftp://%s:%d/%s/",
+    /* ── Informazioni destinazione FTP ── */
+    char ftp_info[1024];
+    snprintf(ftp_info, sizeof(ftp_info), "Destinazione FTP → ftp://%s:%d/%s/",
              g_ftp_host, g_ftp_port, g_ftp_dir);
     GtkWidget *lbl_ftp = gtk_label_new(ftp_info);
     gtk_label_set_xalign(GTK_LABEL(lbl_ftp), 0.0);
@@ -3687,7 +3675,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Header action callbacks
+ * Callback pulsanti della barra superiore (Header)
  * ═══════════════════════════════════════════════════════════ */
 
 static void on_add_clicked(GtkButton *btn, gpointer user_data) {
@@ -3711,7 +3699,7 @@ static void on_github_clicked(GtkButton *btn, gpointer user_data) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Catalog module: structs, GObject wrapper, fetch & UI
+ * Modulo Catalogo App & Homebrew (parsing JSON, feed e UI)
  * ═══════════════════════════════════════════════════════════ */
 
 typedef struct {
@@ -4689,7 +4677,7 @@ static void on_add_source_clicked(GtkButton *btn, gpointer user_data) {
         if (strcmp(g_catalog_sources[i], url) == 0) return;
     }
 
-    strncpy(g_catalog_sources[g_n_sources++], url, sizeof(g_catalog_sources[0]) - 1);
+    g_strlcpy(g_catalog_sources[g_n_sources++], url, sizeof(g_catalog_sources[0]));
     save_settings();
     gtk_editable_set_text(GTK_EDITABLE(g_sources_entry), "");
     refresh_sources_list_ui();
@@ -4812,7 +4800,7 @@ static void on_back_to_downloads_clicked(GtkButton *btn, gpointer user_data) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * DLPSGame Live PS4 Catalog Module (6,500+ Games & Hosters)
+ * Catalogo Giochi PS4 (DLPSGame: oltre 6.500 titoli e hoster)
  * ═══════════════════════════════════════════════════════════ */
 
 #define DLPS_MAX_LINKS 16
@@ -5042,9 +5030,9 @@ static void extract_dlps_links(const char *html_text, DlpsGame *g) {
                                     snprintf(final_name, sizeof(final_name), "%s", hoster[0] ? hoster : "Download Link");
                                 }
 
-                                strncpy(g->links[g->n_links].name, final_name, sizeof(g->links[0].name) - 1);
-                                strncpy(g->links[g->n_links].url, href, sizeof(g->links[0].url) - 1);
-                                strncpy(g->links[g->n_links].hoster, hoster, sizeof(g->links[0].hoster) - 1);
+                                g_strlcpy(g->links[g->n_links].name, final_name, sizeof(g->links[0].name));
+                                g_strlcpy(g->links[g->n_links].url, href, sizeof(g->links[0].url));
+                                g_strlcpy(g->links[g->n_links].hoster, hoster, sizeof(g->links[0].hoster));
                                 g->links[g->n_links].type = ltype;
                                 g->n_links++;
                             }
@@ -5072,16 +5060,15 @@ static void extract_dlps_links(const char *html_text, DlpsGame *g) {
                 char *text = g_match_info_fetch(a_info2, 2);
                 if (href && text && strncmp(href, "http", 4) == 0 && !strstr(href, "guide-download")) {
                     char clean_text[128];
-                    strncpy(clean_text, text, sizeof(clean_text) - 1);
-                    clean_text[sizeof(clean_text) - 1] = '\0';
+                    g_strlcpy(clean_text, text, sizeof(clean_text));
                     strip_html_tags(clean_text);
                     unescape_html(clean_text);
                     g_strstrip(clean_text);
                     if (g_ascii_strcasecmp(clean_text, "here") != 0 &&
                         g_ascii_strcasecmp(clean_text, "guide download") != 0) {
-                        strncpy(g->links[g->n_links].name, clean_text[0] ? clean_text : "Download Link", sizeof(g->links[0].name) - 1);
-                        strncpy(g->links[g->n_links].url, href, sizeof(g->links[0].url) - 1);
-                        strncpy(g->links[g->n_links].hoster, clean_text, sizeof(g->links[0].hoster) - 1);
+                        g_strlcpy(g->links[g->n_links].name, clean_text[0] ? clean_text : "Download Link", sizeof(g->links[0].name));
+                        g_strlcpy(g->links[g->n_links].url, href, sizeof(g->links[0].url));
+                        g_strlcpy(g->links[g->n_links].hoster, clean_text, sizeof(g->links[0].hoster));
                         g->links[g->n_links].type = detect_dlps_link_type(href);
                         g->n_links++;
                     }
@@ -5412,7 +5399,7 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 if (pg->region[0] && !strstr(pg->title, pg->region)) {
                     char clarified[256];
                     snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
-                    strncpy(pg->title, clarified, sizeof(pg->title) - 1);
+                    g_strlcpy(pg->title, clarified, sizeof(pg->title));
                 }
                 out_games[count++] = *pg;
             }
@@ -5423,15 +5410,15 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
             if (pg->region[0] && !strstr(pg->title, pg->region)) {
                 char clarified[256];
                 snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
-                strncpy(pg->title, clarified, sizeof(pg->title) - 1);
+                g_strlcpy(pg->title, clarified, sizeof(pg->title));
             }
             out_games[count++] = *pg;
         }
     }
 
-    /* Fallback: if user performed a specific search and 0 games matched region filter,
-     * but candidate games were found for other regions (e.g. A Day Without Me [USA]):
-     * do NOT return empty! Show the games from other available regions so the user is not left in the dark.
+    /* Fallback: se l'utente ha eseguito una ricerca specifica e nessun gioco corrisponde
+     * al filtro regione selezionato, ma esistono risultati per altre regioni:
+     * mostra comunque i giochi disponibili indicando la regione trovata.
      */
     if (count == 0 && cand_count > 0 && is_search) {
         for (int i = 0; i < cand_count && count < max_games; i++) {
@@ -5439,7 +5426,7 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
             if (pg->region[0] && !strstr(pg->title, pg->region)) {
                 char clarified[256];
                 snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
-                strncpy(pg->title, clarified, sizeof(pg->title) - 1);
+                g_strlcpy(pg->title, clarified, sizeof(pg->title));
             }
             out_games[count++] = *pg;
         }
@@ -5990,8 +5977,8 @@ static gboolean on_mediafire_resolved_idle(gpointer user_data) {
 static void *mediafire_resolve_thread(void *arg) {
     DlpsActionData *req = (DlpsActionData *)arg;
     MediafireRes *res = calloc(1, sizeof(MediafireRes));
-    strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
-    strncpy(res->password, req->password, sizeof(res->password) - 1);
+    g_strlcpy(res->game_title, req->game_title, sizeof(res->game_title));
+    g_strlcpy(res->password, req->password, sizeof(res->password));
     res->dialog = req->dialog;
     res->sess = req->sess;
 
@@ -6109,8 +6096,8 @@ static gboolean on_onefichier_resolved_idle(gpointer user_data) {
 static void *onefichier_resolve_thread(void *arg) {
     DlpsActionData *req = (DlpsActionData *)arg;
     OneFichierRes *res = calloc(1, sizeof(OneFichierRes));
-    strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
-    strncpy(res->password, req->password, sizeof(res->password) - 1);
+    g_strlcpy(res->game_title, req->game_title, sizeof(res->game_title));
+    g_strlcpy(res->password, req->password, sizeof(res->password));
     res->dialog = req->dialog;
     res->sess = req->sess;
 
@@ -6238,8 +6225,8 @@ static gboolean on_realdebrid_resolved_idle(gpointer user_data) {
 static void *realdebrid_resolve_thread(void *arg) {
     DlpsActionData *req = (DlpsActionData *)arg;
     RealDebridRes *res = calloc(1, sizeof(RealDebridRes));
-    strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
-    strncpy(res->password, req->password, sizeof(res->password) - 1);
+    g_strlcpy(res->game_title, req->game_title, sizeof(res->game_title));
+    g_strlcpy(res->password, req->password, sizeof(res->password));
     res->dialog = req->dialog;
     res->sess = req->sess;
 
@@ -6332,7 +6319,7 @@ static void on_dlps_realdebrid_clicked(GtkButton *btn, gpointer user_data) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Undetected ChromeDriver (UC) Background Resolver
+ * Risolutore in background Undetected ChromeDriver (UC)
  * ═══════════════════════════════════════════════════════════ */
 typedef struct {
     int success;
@@ -6387,8 +6374,8 @@ static gboolean on_uc_resolved_idle(gpointer user_data) {
 static void *uc_resolve_thread(void *arg) {
     DlpsActionData *req = (DlpsActionData *)arg;
     UcResolveRes *res = calloc(1, sizeof(UcResolveRes));
-    strncpy(res->game_title, req->game_title, sizeof(res->game_title) - 1);
-    strncpy(res->password, req->password, sizeof(res->password) - 1);
+    g_strlcpy(res->game_title, req->game_title, sizeof(res->game_title));
+    g_strlcpy(res->password, req->password, sizeof(res->password));
     res->dialog = req->dialog;
     res->sess = req->sess;
 
@@ -6725,11 +6712,11 @@ static void on_dlps_auto_clicked(GtkButton *btn, gpointer user_data) {
 
     AutoSession *sess = calloc(1, sizeof(AutoSession));
     if (!sess) return;
-    strncpy(sess->title, game->title, sizeof(sess->title) - 1);
-    strncpy(sess->pass, game->password, sizeof(sess->pass) - 1);
+    g_strlcpy(sess->title, game->title, sizeof(sess->title));
+    g_strlcpy(sess->pass, game->password, sizeof(sess->pass));
 
-    /* Order: main game before update/DLC (extras only if nothing else exists),
-     * then by rank: direct .pkg > Mediafire > hoster via Real-Debrid > manual links. */
+    /* Priorità: gioco base prima di update/DLC (gli extra vengono inclusi solo se non vi è altro),
+     * ordinamento per affidabilità: .pkg diretto > Mediafire > hoster Debrid > risolutore browser. */
     gboolean has_main = FALSE;
     for (int i = 0; i < game->n_links; i++)
         if (!link_is_extra_content(&game->links[i])) has_main = TRUE;
@@ -7059,9 +7046,9 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
         /* Context action buttons */
         if (game->links[i].type == DLPS_LINK_DIRECT_PKG) {
             DlpsPreFillData *pfd = malloc(sizeof(DlpsPreFillData));
-            strncpy(pfd->url, game->links[i].url, sizeof(pfd->url) - 1);
+            g_strlcpy(pfd->url, game->links[i].url, sizeof(pfd->url));
             snprintf(pfd->dest_name, sizeof(pfd->dest_name), "%.250s.pkg", game->title);
-            strncpy(pfd->password, game->password, sizeof(pfd->password) - 1);
+            g_strlcpy(pfd->password, game->password, sizeof(pfd->password));
             pfd->dialog = dialog;
 
             GtkWidget *btn_dl = gtk_button_new_with_label("Scarica .PKG");
@@ -7071,9 +7058,9 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             gtk_box_append(GTK_BOX(row), btn_dl);
         } else if (game->links[i].type == DLPS_LINK_MEDIAFIRE) {
             DlpsActionData *mfd = malloc(sizeof(DlpsActionData));
-            strncpy(mfd->url, game->links[i].url, sizeof(mfd->url) - 1);
-            strncpy(mfd->game_title, game->title, sizeof(mfd->game_title) - 1);
-            strncpy(mfd->password, game->password, sizeof(mfd->password) - 1);
+            g_strlcpy(mfd->url, game->links[i].url, sizeof(mfd->url));
+            g_strlcpy(mfd->game_title, game->title, sizeof(mfd->game_title));
+            g_strlcpy(mfd->password, game->password, sizeof(mfd->password));
             mfd->dialog = dialog;
 
             GtkWidget *btn_mf = gtk_button_new_with_label("Risolvi e Scarica");
@@ -7089,9 +7076,9 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             gtk_box_append(GTK_BOX(row), btn_wb);
         } else if (strstr(game->links[i].url, "1fichier.com")) {
             DlpsActionData *ofd = malloc(sizeof(DlpsActionData));
-            strncpy(ofd->url, game->links[i].url, sizeof(ofd->url) - 1);
-            strncpy(ofd->game_title, game->title, sizeof(ofd->game_title) - 1);
-            strncpy(ofd->password, game->password, sizeof(ofd->password) - 1);
+            g_strlcpy(ofd->url, game->links[i].url, sizeof(ofd->url));
+            g_strlcpy(ofd->game_title, game->title, sizeof(ofd->game_title));
+            g_strlcpy(ofd->password, game->password, sizeof(ofd->password));
             ofd->dialog = dialog;
 
             GtkWidget *btn_1f = gtk_button_new_with_label("Risolvi 1Fichier");
@@ -7102,9 +7089,9 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
             if (g_realdebrid_token[0]) {
                 DlpsActionData *rdd = malloc(sizeof(DlpsActionData));
-                strncpy(rdd->url, game->links[i].url, sizeof(rdd->url) - 1);
-                strncpy(rdd->game_title, game->title, sizeof(rdd->game_title) - 1);
-                strncpy(rdd->password, game->password, sizeof(rdd->password) - 1);
+                g_strlcpy(rdd->url, game->links[i].url, sizeof(rdd->url));
+                g_strlcpy(rdd->game_title, game->title, sizeof(rdd->game_title));
+                g_strlcpy(rdd->password, game->password, sizeof(rdd->password));
                 rdd->dialog = dialog;
 
                 GtkWidget *btn_rd = gtk_button_new_with_label("Debrid 1-Click");
@@ -7123,9 +7110,9 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             /* Protected or Hoster link */
             if (g_realdebrid_token[0]) {
                 DlpsActionData *rdd = malloc(sizeof(DlpsActionData));
-                strncpy(rdd->url, game->links[i].url, sizeof(rdd->url) - 1);
-                strncpy(rdd->game_title, game->title, sizeof(rdd->game_title) - 1);
-                strncpy(rdd->password, game->password, sizeof(rdd->password) - 1);
+                g_strlcpy(rdd->url, game->links[i].url, sizeof(rdd->url));
+                g_strlcpy(rdd->game_title, game->title, sizeof(rdd->game_title));
+                g_strlcpy(rdd->password, game->password, sizeof(rdd->password));
                 rdd->dialog = dialog;
 
                 GtkWidget *btn_rd = gtk_button_new_with_label("Debrid 1-Click");
@@ -7137,9 +7124,9 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
             if (is_uc_resolver_available() && (game->links[i].type == DLPS_LINK_PROTECTOR || game->links[i].type == DLPS_LINK_HOSTER)) {
                 DlpsActionData *ucd = malloc(sizeof(DlpsActionData));
-                strncpy(ucd->url, game->links[i].url, sizeof(ucd->url) - 1);
-                strncpy(ucd->game_title, game->title, sizeof(ucd->game_title) - 1);
-                strncpy(ucd->password, game->password, sizeof(ucd->password) - 1);
+                g_strlcpy(ucd->url, game->links[i].url, sizeof(ucd->url));
+                g_strlcpy(ucd->game_title, game->title, sizeof(ucd->game_title));
+                g_strlcpy(ucd->password, game->password, sizeof(ucd->password));
                 ucd->dialog = dialog;
                 ucd->sess = NULL;
 
@@ -7208,8 +7195,8 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
 
     DlpsDirectDlData *ddd = malloc(sizeof(DlpsDirectDlData));
     ddd->entry_url = entry_direct;
-    strncpy(ddd->game_title, game->title, sizeof(ddd->game_title) - 1);
-    strncpy(ddd->password, game->password, sizeof(ddd->password) - 1);
+    g_strlcpy(ddd->game_title, game->title, sizeof(ddd->game_title));
+    g_strlcpy(ddd->password, game->password, sizeof(ddd->password));
     ddd->dialog = dialog;
 
     GtkWidget *btn_start_ps = gtk_button_new_with_label("Avvia su PS");
@@ -7666,7 +7653,7 @@ static void on_dlps_clicked(GtkButton *btn, gpointer user_data) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Application activate — builds the main window
+ * Inizializzazione applicazione e costruzione finestra principale
  * ═══════════════════════════════════════════════════════════ */
 
 static void activate(GtkApplication *app, gpointer user_data) {
@@ -7726,7 +7713,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_box_append(GTK_BOX(title_row), lbl_title);
     gtk_box_append(GTK_BOX(title_row), btn_github);
 
-    char sub[512];
+    char sub[1024];
     snprintf(sub, sizeof(sub), "ftp://%s:%d/%s", g_ftp_host, g_ftp_port, g_ftp_dir);
     g_lbl_sub = gtk_label_new(sub);
     gtk_widget_add_css_class(g_lbl_sub, "app-subtitle");
@@ -7867,7 +7854,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
 }
 
 /* ═══════════════════════════════════════════════════════════
- * Entry point
+ * Punto di ingresso principale (main)
  * ═══════════════════════════════════════════════════════════ */
 
 int main(int argc, char **argv) {

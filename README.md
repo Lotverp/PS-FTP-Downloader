@@ -72,7 +72,7 @@ make
 ```bash
 cd PS-FTP-Downloader/gtk-app
 ./build-deb.sh
-sudo apt install ../ps-ftp-downloader_1.3.4_amd64.deb
+sudo apt install ../ps-ftp-downloader_1.3.5_amd64.deb
 ```
 
 ---

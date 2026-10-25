@@ -2,14 +2,13 @@
 
 # ─────────────────────────────────────────────────────────────────
 #  PS FTP Downloader — CLI
-#  Download PKG and files directly from the network -> PS via FTP
-#  without saving anything locally.
+#  Scarica file e PKG direttamente dalla rete alla PlayStation via FTP
+#  senza salvare nulla localmente su disco.
 #
-#  Uses PS FTP in HEN / Jailbreak mode
-#  (GoldHen, ps4-hen, etc.)
+#  Supporta console PS con server FTP attivo (GoldHEN, ps4-hen, ecc.)
 #
-#  Dependencies: wget, curl, pv
-#  Install: sudo apt install wget curl pv
+#  Dipendenze: wget, curl, pv
+#  Installazione: sudo apt install wget curl pv
 # ─────────────────────────────────────────────────────────────────
 
 FTP_HOST="${FTP_HOST:-192.168.1.195}"
@@ -30,45 +29,45 @@ RESET="\033[0m"
 clear
 echo -e "${CYAN}"
 echo "  ============================================"
-echo "           PS FTP Downloader  v1.0            "
-echo "    Network -> PS FTP (No local storage)      "
+echo "           PS FTP Downloader  v1.3.5          "
+echo "    Rete -> PS FTP (Nessuno storage locale)   "
 echo "  ============================================"
 echo -e "${RESET}"
-echo -e "  ${DIM}Target: ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${RESET}"
+echo -e "  ${DIM}Destinazione: ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${RESET}"
 echo ""
 
-# Check dependencies
+# Verifica dipendenze di sistema
 MISSING=()
 for cmd in wget curl pv; do
     command -v "$cmd" &>/dev/null || MISSING+=("$cmd")
 done
 
 if [ ${#MISSING[@]} -gt 0 ]; then
-    echo -e "${RED}[Error] Missing tools: ${MISSING[*]}${RESET}"
-    echo -e "${YELLOW}  Install with: sudo apt install ${MISSING[*]}${RESET}"
+    echo -e "${RED}[Errore] Strumenti mancanti: ${MISSING[*]}${RESET}"
+    echo -e "${YELLOW}  Installa con: sudo apt install ${MISSING[*]}${RESET}"
     exit 1
 fi
 
-# Automatically ensure remote FTP folder exists on PS
-echo -e "${DIM}  Connecting to PS FTP (ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/)...${RESET}"
+# Assicura automaticamente che la cartella FTP remota esista sulla PS
+echo -e "${DIM}  Connessione a PS FTP (ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/)...${RESET}"
 if curl -s --connect-timeout 4 -m 8 -u "anonymous:anonymous@" --ftp-create-dirs "ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/" -o /dev/null; then
-    echo -e "  ${GREEN}[OK] Connected to PS — Directory '${FTP_DIR}' verified and ready!${RESET}"
+    echo -e "  ${GREEN}[OK] Connesso alla PS — Cartella '${FTP_DIR}' verificata e pronta!${RESET}"
 else
-    echo -e "  ${YELLOW}[Warn] Could not verify/create ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${RESET}"
-    echo -e "  ${DIM}  (Make sure GoldHEN / FTP is enabled on the console)${RESET}"
+    echo -e "  ${YELLOW}[Avviso] Impossibile verificare/creare ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${RESET}"
+    echo -e "  ${DIM}  (Assicurati che GoldHEN / server FTP sia abilitato sulla console)${RESET}"
 fi
 echo ""
 
-echo -e "${BOLD}File URL to download to PS:${RESET}"
+echo -e "${BOLD}URL del file da scaricare sulla PS:${RESET}"
 read -rp "  -> " DOWNLOAD_URL
 
 if [[ -z "$DOWNLOAD_URL" ]]; then
-    echo -e "${RED}[Error] No URL entered. Exiting.${RESET}"
+    echo -e "${RED}[Errore] Nessun URL inserito. Uscita.${RESET}"
     exit 1
 fi
 
 echo ""
-echo -e "${DIM}  Retrieving file information...${RESET}"
+echo -e "${DIM}  Recupero informazioni sul file...${RESET}"
 
 HEADER=$(curl -sI --max-time 10 -L "$DOWNLOAD_URL" 2>/dev/null)
 FILE_SIZE=$(echo "$HEADER" | grep -i "Content-Length" | tail -1 | awk '{print $2}' | tr -d '\r')
@@ -84,7 +83,7 @@ if [[ "$EXT" == "$REMOTE_FILENAME" || -z "$EXT" || ${#EXT} -gt 10 ]]; then
     EXT=""
 fi
 
-echo -e "  [OK] Detected file: ${BOLD}${REMOTE_FILENAME}${RESET}"
+echo -e "  [OK] File rilevato: ${BOLD}${REMOTE_FILENAME}${RESET}"
 
 if [[ -n "$FILE_SIZE" && "$FILE_SIZE" -gt 0 ]]; then
     if   (( FILE_SIZE >= 1073741824 )); then
@@ -94,24 +93,24 @@ if [[ -n "$FILE_SIZE" && "$FILE_SIZE" -gt 0 ]]; then
     else
         SIZE_HR="${FILE_SIZE} B"
     fi
-    echo -e "  [OK] Size: ${BOLD}${SIZE_HR}${RESET}"
+    echo -e "  [OK] Dimensione: ${BOLD}${SIZE_HR}${RESET}"
 else
     FILE_SIZE=""
-    echo -e "  [Warn] Size unavailable"
+    echo -e "  ${YELLOW}[Avviso] Dimensione non disponibile${RESET}"
 fi
 
 echo ""
 
 if [[ -n "$EXT" ]]; then
-    echo -e "${BOLD}Destination filename on PS${RESET} ${DIM}(without extension, .${EXT} will be added):${RESET}"
+    echo -e "${BOLD}Nome file di destinazione su PS${RESET} ${DIM}(senza estensione, .${EXT} verrà aggiunta):${RESET}"
 else
-    echo -e "${BOLD}Destination filename on PS${RESET} ${DIM}(include extension if necessary):${RESET}"
+    echo -e "${BOLD}Nome file di destinazione su PS${RESET} ${DIM}(includi l'estensione se necessaria):${RESET}"
 fi
 
 read -rp "  -> " BASE_NAME
 
 if [[ -z "$BASE_NAME" ]]; then
-    echo -e "${RED}[Error] Filename not entered. Exiting.${RESET}"
+    echo -e "${RED}[Errore] Nome file non inserito. Uscita.${RESET}"
     exit 1
 fi
 
@@ -121,29 +120,24 @@ else
     DEST_FILENAME="${BASE_NAME}"
 fi
 
-# Ensure FTP_DIR has no leading/trailing slashes and defaults to data/pkg
-FTP_DIR="${FTP_DIR#/}"
-FTP_DIR="${FTP_DIR%/}"
-FTP_DIR="${FTP_DIR:-data/pkg}"
-
 FTP_URL="ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${DEST_FILENAME}"
 
 echo ""
 echo -e "${CYAN}---------------------------------------------${RESET}"
-echo -e "  ${BOLD}Transfer Summary${RESET}"
-echo -e "  ${DIM}Source    :${RESET} ${DOWNLOAD_URL}"
-echo -e "  ${DIM}PS (FTP)  :${RESET} ${FTP_URL}"
+echo -e "  ${BOLD}Riepilogo Trasferimento${RESET}"
+echo -e "  ${DIM}Sorgente     :${RESET} ${DOWNLOAD_URL}"
+echo -e "  ${DIM}PS (FTP)     :${RESET} ${FTP_URL}"
 echo -e "${CYAN}---------------------------------------------${RESET}"
 echo ""
-read -rp "  Confirm and start transfer to PS? [Y/n] " CONFIRM
+read -rp "  Confermare e avviare il trasferimento su PS? [S/n] " CONFIRM
 CONFIRM="${CONFIRM,,}"
 if [[ "$CONFIRM" == "n" || "$CONFIRM" == "no" ]]; then
-    echo -e "${YELLOW}  Operation cancelled.${RESET}"
+    echo -e "${YELLOW}  Operazione annullata.${RESET}"
     exit 0
 fi
 
 echo ""
-echo -e "${BLUE}  Streaming to PS...${RESET}"
+echo -e "${BLUE}  Streaming verso la PlayStation in corso...${RESET}"
 echo ""
 
 if [[ -n "$FILE_SIZE" ]]; then
@@ -160,12 +154,12 @@ EXIT_CODE=$?
 
 echo ""
 if [[ $EXIT_CODE -eq 0 ]]; then
-    echo -e "${GREEN}${BOLD}  [OK] File successfully sent to PS!${RESET}"
-    echo -e "  ${DIM}Available on PS at: /${FTP_DIR}/${DEST_FILENAME}${RESET}"
+    echo -e "${GREEN}${BOLD}  [OK] File inviato con successo alla PlayStation!${RESET}"
+    echo -e "  ${DIM}Disponibile su PS in: /${FTP_DIR}/${DEST_FILENAME}${RESET}"
 else
-    echo -e "${RED}${BOLD}  [Error] Transfer failed (code: ${EXIT_CODE})${RESET}"
-    echo -e "  ${YELLOW}  - Verify PS is on and in HEN/GoldHen/FTP mode${RESET}"
-    echo -e "  ${YELLOW}  - Check IP address: ${FTP_HOST}:${FTP_PORT}${RESET}"
+    echo -e "${RED}${BOLD}  [Errore] Trasferimento non riuscito (codice: ${EXIT_CODE})${RESET}"
+    echo -e "  ${YELLOW}  - Verifica che la PS sia accesa con GoldHEN / FTP attivo${RESET}"
+    echo -e "  ${YELLOW}  - Controlla l'indirizzo IP configurato: ${FTP_HOST}:${FTP_PORT}${RESET}"
     exit $EXIT_CODE
 fi
 
