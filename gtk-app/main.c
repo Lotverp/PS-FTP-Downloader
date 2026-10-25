@@ -766,6 +766,43 @@ static void *http_thread_fn(void *arg) {
     Download       *dl   = a->dl;
     free(a);
 
+    /* Local file streaming directly to pipe */
+    if (dl->url[0] == '/' || strncmp(dl->url, "file://", 7) == 0) {
+        const char *lp = (dl->url[0] == '/') ? dl->url : dl->url + 7;
+        char unesc[2048] = "";
+        if (strncmp(dl->url, "file://", 7) == 0) {
+            char *un = g_uri_unescape_string(dl->url + 7, NULL);
+            strncpy(unesc, un ? un : lp, sizeof(unesc) - 1);
+            if (un) g_free(un);
+            lp = unesc;
+        }
+        FILE *f = fopen(lp, "rb");
+        if (!f) {
+            strncpy(dl->error_msg, "Impossibile aprire il file locale", sizeof(dl->error_msg) - 1);
+            pthread_mutex_lock(&pipe->mutex);
+            pipe->http_done = 1;
+            pthread_cond_broadcast(&pipe->cond_data);
+            pthread_mutex_unlock(&pipe->mutex);
+            return NULL;
+        }
+        if (dl->resume_offset > 0) {
+            fseeko(f, dl->resume_offset, SEEK_SET);
+        }
+        HttpWriteCtx wc = { pipe, NULL, dl, 1 };
+        char buf[65536];
+        while (!dl->request_stop && !pipe->cancel) {
+            size_t n = fread(buf, 1, sizeof(buf), f);
+            if (n <= 0) break;
+            if (http_write_cb(buf, 1, n, &wc) == 0) break;
+        }
+        fclose(f);
+        pthread_mutex_lock(&pipe->mutex);
+        pipe->http_done = 1;
+        pthread_cond_broadcast(&pipe->cond_data);
+        pthread_mutex_unlock(&pipe->mutex);
+        return NULL;
+    }
+
     CURL *c = curl_easy_init();
     curl_common_opts(c, dl->url);
     CURL_SET(c, CURLOPT_NOSIGNAL,        1L);
@@ -1240,48 +1277,69 @@ static void *download_thread_fn_internal(void *arg) {
     /* Ensure target remote folder exists on PS4 */
     ftp_ensure_dir(g_ftp_host, g_ftp_port, g_ftp_user, g_ftp_pass, g_ftp_dir, NULL, 0);
 
-    /* ── Step 1: HTTP HEAD — get content length ── */
-    dl->status = DL_PROBING;
-    post_update(dl);
-
-    {
-        CURL *head = curl_easy_init();
-        curl_common_opts(head, dl->url);
-        CURL_SET(head, CURLOPT_NOSIGNAL,       1L);
-        CURL_SET(head, CURLOPT_URL,            dl->url);
-        CURL_SET(head, CURLOPT_NOBODY,         1L);
-        CURL_SET(head, CURLOPT_CONNECTTIMEOUT, 15L);
-        CURL_SET(head, CURLOPT_FAILONERROR,    1L);
-        CURLcode res = curl_easy_perform(head);
-        if (res == CURLE_HTTP_RETURNED_ERROR) {
-            long code = 0;
-            curl_easy_getinfo(head, CURLINFO_RESPONSE_CODE, &code);
-            fprintf(stderr, "HEAD probe failed: HTTP %ld\n", code);
+    gboolean is_local_single = (dl->url[0] == '/' || strncmp(dl->url, "file://", 7) == 0);
+    if (is_local_single) {
+        const char *lp = (dl->url[0] == '/') ? dl->url : dl->url + 7;
+        char unesc[2048] = "";
+        if (strncmp(dl->url, "file://", 7) == 0) {
+            char *un = g_uri_unescape_string(dl->url + 7, NULL);
+            strncpy(unesc, un ? un : lp, sizeof(unesc) - 1);
+            if (un) g_free(un);
+            lp = unesc;
         }
-        curl_off_t cl = 0;
-        curl_easy_getinfo(head, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
-        curl_easy_cleanup(head);
-        if (cl > 0) dl->total_size = cl;
-    }
-
-    if (dl->total_size <= 0) {
-        /* Fallback: GET with Range: bytes=0-0 to read Content-Range */
-        CURL *get = curl_easy_init();
-        curl_common_opts(get, dl->url);
-        CURL_SET(get, CURLOPT_NOSIGNAL,       1L);
-        CURL_SET(get, CURLOPT_URL,            dl->url);
-        CURL_SET(get, CURLOPT_RANGE,          "0-0");
-        CURL_SET(get, CURLOPT_CONNECTTIMEOUT, 15L);
-        CURL_SET(get, CURLOPT_FAILONERROR,    1L);
-        CURL_SET(get, CURLOPT_WRITEFUNCTION,  null_write_cb);
-        CURL_SET(get, CURLOPT_HEADERFUNCTION, header_parse_range_cb);
-        curl_off_t parsed_size = 0;
-        CURL_SET(get, CURLOPT_HEADERDATA,     &parsed_size);
-        
-        if (curl_easy_perform(get) == CURLE_OK && parsed_size > 0) {
-            dl->total_size = parsed_size;
+        struct stat st;
+        if (stat(lp, &st) == 0) {
+            dl->total_size = st.st_size;
+        } else {
+            snprintf(dl->error_msg, sizeof(dl->error_msg), "File locale non trovato: %s", lp);
+            dl->status = DL_ERROR;
+            post_update(dl);
+            return NULL;
         }
-        curl_easy_cleanup(get);
+    } else {
+        /* ── Step 1: HTTP HEAD — get content length ── */
+        dl->status = DL_PROBING;
+        post_update(dl);
+
+        {
+            CURL *head = curl_easy_init();
+            curl_common_opts(head, dl->url);
+            CURL_SET(head, CURLOPT_NOSIGNAL,       1L);
+            CURL_SET(head, CURLOPT_URL,            dl->url);
+            CURL_SET(head, CURLOPT_NOBODY,         1L);
+            CURL_SET(head, CURLOPT_CONNECTTIMEOUT, 15L);
+            CURL_SET(head, CURLOPT_FAILONERROR,    1L);
+            CURLcode res = curl_easy_perform(head);
+            if (res == CURLE_HTTP_RETURNED_ERROR) {
+                long code = 0;
+                curl_easy_getinfo(head, CURLINFO_RESPONSE_CODE, &code);
+                fprintf(stderr, "HEAD probe failed: HTTP %ld\n", code);
+            }
+            curl_off_t cl = 0;
+            curl_easy_getinfo(head, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
+            curl_easy_cleanup(head);
+            if (cl > 0) dl->total_size = cl;
+        }
+
+        if (dl->total_size <= 0) {
+            /* Fallback: GET with Range: bytes=0-0 to read Content-Range */
+            CURL *get = curl_easy_init();
+            curl_common_opts(get, dl->url);
+            CURL_SET(get, CURLOPT_NOSIGNAL,       1L);
+            CURL_SET(get, CURLOPT_URL,            dl->url);
+            CURL_SET(get, CURLOPT_RANGE,          "0-0");
+            CURL_SET(get, CURLOPT_CONNECTTIMEOUT, 15L);
+            CURL_SET(get, CURLOPT_FAILONERROR,    1L);
+            CURL_SET(get, CURLOPT_WRITEFUNCTION,  null_write_cb);
+            CURL_SET(get, CURLOPT_HEADERFUNCTION, header_parse_range_cb);
+            curl_off_t parsed_size = 0;
+            CURL_SET(get, CURLOPT_HEADERDATA,     &parsed_size);
+            
+            if (curl_easy_perform(get) == CURLE_OK && parsed_size > 0) {
+                dl->total_size = parsed_size;
+            }
+            curl_easy_cleanup(get);
+        }
     }
 
     /* ── Step 2: FTP SIZE probe — find resume offset ── */
@@ -2087,6 +2145,48 @@ static void *split_archive_thread_fn_internal(void *arg) {
     }
 
     for (int i = sa->current_part_idx; i < sa->n_urls && !dl->request_stop; i++) {
+        /* Check if part is a local file already on disk */
+        gboolean is_local_part = (sa->urls[i][0] == '/' || strncmp(sa->urls[i], "file://", 7) == 0);
+        if (is_local_part) {
+            const char *loc_path = (sa->urls[i][0] == '/') ? sa->urls[i] : sa->urls[i] + 7;
+            char unesc_loc[SA_URL_LEN] = "";
+            if (strncmp(sa->urls[i], "file://", 7) == 0) {
+                char *un = g_uri_unescape_string(sa->urls[i] + 7, NULL);
+                strncpy(unesc_loc, un ? un : loc_path, sizeof(unesc_loc) - 1);
+                if (un) g_free(un);
+                loc_path = unesc_loc;
+            }
+            struct stat loc_st;
+            if (stat(loc_path, &loc_st) == 0) {
+                unlink(part_paths[i]);
+                if (symlink(loc_path, part_paths[i]) != 0) {
+                    FILE *src = fopen(loc_path, "rb");
+                    FILE *dst = fopen(part_paths[i], "wb");
+                    if (src && dst) {
+                        char buf[65536];
+                        size_t n;
+                        while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+                            fwrite(buf, 1, n, dst);
+                        }
+                    }
+                    if (src) fclose(src);
+                    if (dst) fclose(dst);
+                }
+                dl->downloaded = loc_st.st_size;
+                dl->total_size = loc_st.st_size;
+                dl->progress = 1.0;
+                post_update(dl);
+                sa->current_part_idx = i + 1;
+                continue;
+            } else {
+                snprintf(dl->error_msg, sizeof(dl->error_msg),
+                         "File archivio locale non trovato: %s", loc_path);
+                dl->status = DL_ERROR;
+                post_update(dl);
+                return NULL;
+            }
+        }
+
         curl_off_t offset = 0;
         struct stat st;
         if (stat(part_paths[i], &st) == 0) {
@@ -2417,6 +2517,31 @@ static gboolean do_probe_idle(gpointer user_data) {
 static void *probe_thread_fn(void *arg) {
     ProbeArgs *a = (ProbeArgs *)arg;
 
+    /* Handle local files */
+    if (a->url[0] == '/' || strncmp(a->url, "file://", 7) == 0) {
+        const char *lp = (a->url[0] == '/') ? a->url : a->url + 7;
+        char unesc[2048] = "";
+        if (strncmp(a->url, "file://", 7) == 0) {
+            char *un = g_uri_unescape_string(a->url + 7, NULL);
+            strncpy(unesc, un ? un : lp, sizeof(unesc) - 1);
+            if (un) g_free(un);
+            lp = unesc;
+        }
+        struct stat st;
+        if (stat(lp, &st) == 0) {
+            ProbeResult *r = malloc(sizeof(ProbeResult));
+            r->size = st.st_size;
+            char ext[32] = "";
+            const char *dot = strrchr(lp, '.');
+            if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN)
+                strncpy(ext, dot + 1, sizeof(ext) - 1);
+            strncpy(r->ext, ext, sizeof(r->ext) - 1);
+            g_idle_add(do_probe_idle, r);
+            free(a);
+            return NULL;
+        }
+    }
+
     CURL *c = curl_easy_init();
     curl_common_opts(c, a->url);
     CURL_SET(c, CURLOPT_NOSIGNAL,          1L);
@@ -2444,9 +2569,12 @@ static void *probe_thread_fn(void *arg) {
         strncpy(tmp, eff_url, sizeof(tmp) - 1);
         char *q = strchr(tmp, '?');
         if (q) *q = '\0';
-        char *dot = strrchr(tmp, '.');
+        char *unescaped = g_uri_unescape_string(tmp, NULL);
+        const char *work = unescaped ? unescaped : tmp;
+        const char *dot = strrchr(work, '.');
         if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN)
             strncpy(ext, dot + 1, sizeof(ext) - 1);
+        if (unescaped) g_free(unescaped);
     }
 
     curl_easy_cleanup(c);
@@ -2464,6 +2592,20 @@ static char *g_probe_pending_url = NULL;
 
 static gboolean do_probe_timeout(gpointer user_data) {
     if (!g_probe_pending_url) return G_SOURCE_REMOVE;
+
+    if (g_ascii_strncasecmp(g_probe_pending_url, "chrome://", 9) == 0 ||
+        g_ascii_strncasecmp(g_probe_pending_url, "edge://", 7) == 0 ||
+        g_ascii_strncasecmp(g_probe_pending_url, "about:", 6) == 0 ||
+        g_ascii_strncasecmp(g_probe_pending_url, "javascript:", 11) == 0 ||
+        g_ascii_strncasecmp(g_probe_pending_url, "blob:", 5) == 0) {
+        if (g_lbl_detected) {
+            gtk_label_set_text(GTK_LABEL(g_lbl_detected), "Protocollo browser non supportato (chrome://)");
+        }
+        g_free(g_probe_pending_url);
+        g_probe_pending_url = NULL;
+        g_probe_timeout_id = 0;
+        return G_SOURCE_REMOVE;
+    }
 
     ProbeArgs *a = malloc(sizeof(ProbeArgs));
     strncpy(a->url, g_probe_pending_url, sizeof(a->url) - 1);
@@ -2518,13 +2660,19 @@ static gboolean is_known_ext(const char *ext) {
  * ═══════════════════════════════════════════════════════════ */
 
 static void extract_url_ext(const char *url, char *ext, size_t ext_size) {
+    if (!url || !ext || ext_size == 0) return;
+    ext[0] = '\0';
     char tmp[4096];
     strncpy(tmp, url, sizeof(tmp) - 1);
+    tmp[sizeof(tmp) - 1] = '\0';
     char *q = strchr(tmp, '?');
     if (q) *q = '\0';
-    char *dot = strrchr(tmp, '.');
+    char *unescaped = g_uri_unescape_string(tmp, NULL);
+    const char *work = unescaped ? unescaped : tmp;
+    const char *dot = strrchr(work, '.');
     if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN)
         strncpy(ext, dot + 1, ext_size - 1);
+    if (unescaped) g_free(unescaped);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2536,8 +2684,35 @@ static Download *start_single_download(const char *url,
                                        const char *password) {
     if (!url || strlen(url) < (size_t)URL_MIN_LEN) return NULL;
 
+    if (g_ascii_strncasecmp(url, "chrome://", 9) == 0 ||
+        g_ascii_strncasecmp(url, "chrome-extension://", 19) == 0 ||
+        g_ascii_strncasecmp(url, "edge://", 7) == 0 ||
+        g_ascii_strncasecmp(url, "about:", 6) == 0 ||
+        g_ascii_strncasecmp(url, "javascript:", 11) == 0 ||
+        g_ascii_strncasecmp(url, "blob:", 5) == 0) {
+        show_toast("Protocollo browser non supportato (chrome://)");
+        return NULL;
+    }
+
+    gboolean is_local = (url[0] == '/' || strncmp(url, "file://", 7) == 0);
+    char local_clean[4096] = "";
+    if (is_local) {
+        const char *lp = (url[0] == '/') ? url : url + 7;
+        char *un = g_uri_unescape_string(lp, NULL);
+        strncpy(local_clean, un ? un : lp, sizeof(local_clean) - 1);
+        if (un) g_free(un);
+        if (access(local_clean, R_OK) != 0) {
+            show_toast("File locale non trovato o illeggibile!");
+            return NULL;
+        }
+    }
+    const char *actual_url = is_local ? local_clean : url;
+
     char det_ext[32] = "";
-    extract_url_ext(url, det_ext, sizeof(det_ext));
+    extract_url_ext(actual_url, det_ext, sizeof(det_ext));
+    if (det_ext[0] == '\0' && dest_name && dest_name[0]) {
+        extract_url_ext(dest_name, det_ext, sizeof(det_ext));
+    }
 
     char full_name[512] = "";
     if (dest_name && strlen(dest_name) > 0) {
@@ -2550,7 +2725,7 @@ static Download *start_single_download(const char *url,
             snprintf(full_name, sizeof(full_name), "%s", dest_name);
     } else {
         char tmp[4096];
-        strncpy(tmp, url, sizeof(tmp) - 1);
+        strncpy(tmp, actual_url, sizeof(tmp) - 1);
         tmp[sizeof(tmp) - 1] = '\0';
         char *q = strchr(tmp, '?');
         if (q) *q = '\0';
@@ -2575,9 +2750,9 @@ static Download *start_single_download(const char *url,
     dl->id         = next_id++;
     dl->status     = DL_QUEUED;
     dl->total_size = -1;
-    strncpy(dl->url,       url,       sizeof(dl->url)       - 1);
-    strncpy(dl->dest_name, full_name, sizeof(dl->dest_name) - 1);
-    strncpy(dl->ext,       det_ext,   sizeof(dl->ext)       - 1);
+    strncpy(dl->url,       actual_url, sizeof(dl->url)       - 1);
+    strncpy(dl->dest_name, full_name,  sizeof(dl->dest_name) - 1);
+    strncpy(dl->ext,       det_ext,    sizeof(dl->ext)       - 1);
     downloads[n_downloads++] = dl;
     pthread_mutex_unlock(&dl_mutex);
 
@@ -2590,7 +2765,7 @@ static Download *start_single_download(const char *url,
     if (strcasecmp(det_ext, "rar") == 0 || strcasecmp(det_ext, "zip") == 0 || strcasecmp(det_ext, "7z") == 0) {
         SplitArchiveArgs *sa = calloc(1, sizeof(SplitArchiveArgs));
         sa->n_urls = 1;
-        strncpy(sa->urls[0], url, SA_URL_LEN - 1);
+        strncpy(sa->urls[0], actual_url, SA_URL_LEN - 1);
         if (password && password[0]) {
             strncpy(sa->password, password, sizeof(sa->password) - 1);
         }
@@ -2739,6 +2914,29 @@ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     char *pass = gtk_combo_box_text_get_active_text(GTK_COMBO_BOX_TEXT(g_entry_pass_single));
 G_GNUC_END_IGNORE_DEPRECATIONS
 
+    if (g_ascii_strncasecmp(url, "chrome://", 9) == 0 ||
+        g_ascii_strncasecmp(url, "chrome-extension://", 19) == 0 ||
+        g_ascii_strncasecmp(url, "edge://", 7) == 0 ||
+        g_ascii_strncasecmp(url, "about:", 6) == 0 ||
+        g_ascii_strncasecmp(url, "javascript:", 11) == 0 ||
+        g_ascii_strncasecmp(url, "blob:", 5) == 0) {
+        show_toast("Protocollo browser non supportato (chrome://)");
+        if (pass) g_free(pass);
+        g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
+        gtk_window_destroy(GTK_WINDOW(dialog));
+        return;
+    }
+
+    gboolean is_http = (strncmp(url, "http://", 7) == 0 || strncmp(url, "https://", 8) == 0);
+    gboolean is_local = (url[0] == '/' || strncmp(url, "file://", 7) == 0);
+    if (!is_http && !is_local) {
+        show_toast("Protocollo non supportato: inserisci un URL http(s):// o un percorso di file locale.");
+        if (pass) g_free(pass);
+        g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
+        gtk_window_destroy(GTK_WINDOW(dialog));
+        return;
+    }
+
     if (strstr(url, "dlpsgame.com/")) {
         if (g_stack) {
             gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "dlpsgame");
@@ -2792,6 +2990,31 @@ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
 G_GNUC_END_IGNORE_DEPRECATIONS
 }
 
+static void on_browse_file_finish(GObject *source, GAsyncResult *res, gpointer user_data) {
+    (void)user_data;
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+    GError *err = NULL;
+    GFile *file = gtk_file_dialog_open_finish(dialog, res, &err);
+    if (file) {
+        char *path = g_file_get_path(file);
+        if (path && g_entry_url && GTK_IS_ENTRY(g_entry_url)) {
+            gtk_editable_set_text(GTK_EDITABLE(g_entry_url), path);
+        }
+        if (path) g_free(path);
+        g_object_unref(file);
+    } else if (err) {
+        g_error_free(err);
+    }
+}
+
+static void on_browse_local_file_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    GtkWindow *win = GTK_WINDOW(user_data);
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, "Seleziona file o archivio locale (.pkg, .rar, .7z, .zip)");
+    gtk_file_dialog_open(dialog, win, NULL, on_browse_file_finish, NULL);
+}
+
 static void show_add_dialog_prefilled(GtkWindow *parent, const char *pre_url, const char *pre_name, const char *pre_pass);
 static void show_add_dialog(GtkWindow *parent) {
     show_add_dialog_prefilled(parent, NULL, NULL, NULL);
@@ -2799,10 +3022,10 @@ static void show_add_dialog(GtkWindow *parent) {
 
 static void show_add_dialog_prefilled(GtkWindow *parent, const char *pre_url, const char *pre_name, const char *pre_pass) {
     GtkWidget *dialog = gtk_dialog_new_with_buttons(
-        "New Transfer", parent,
+        "Nuovo Trasferimento", parent,
         GTK_DIALOG_MODAL | GTK_DIALOG_DESTROY_WITH_PARENT,
-        "Cancel", GTK_RESPONSE_CANCEL,
-        "Start",  GTK_RESPONSE_OK, NULL);
+        "Annulla", GTK_RESPONSE_CANCEL,
+        "Avvia",  GTK_RESPONSE_OK, NULL);
 
     gtk_widget_set_size_request(dialog, 580, -1);
 
@@ -2816,17 +3039,27 @@ static void show_add_dialog_prefilled(GtkWindow *parent, const char *pre_url, co
     gtk_widget_set_margin_bottom(form, 20);
 
     /* URL field */
-    GtkWidget *lbl_u = gtk_label_new("File URL");
+    GtkWidget *lbl_u = gtk_label_new("URL File o Percorso Locale");
     gtk_label_set_xalign(GTK_LABEL(lbl_u), 0.0);
     gtk_widget_add_css_class(lbl_u, "form-label");
 
+    GtkWidget *row_url = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
     g_entry_url = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_entry_url),
-                                    "https://example.com/file.pkg");
+                                    "https://example.com/file.pkg oppure /home/.../gioco.rar");
     gtk_widget_add_css_class(g_entry_url, "form-entry");
+    gtk_widget_set_hexpand(g_entry_url, TRUE);
     g_signal_connect(g_entry_url, "changed", G_CALLBACK(on_url_changed), NULL);
+    gtk_box_append(GTK_BOX(row_url), g_entry_url);
 
-    g_lbl_detected = gtk_label_new("Enter a URL for automatic detection");
+    GtkWidget *btn_browse = gtk_button_new_with_label("Sfoglia...");
+    gtk_widget_add_css_class(btn_browse, "btn-copy-link");
+    gtk_widget_set_focusable(btn_browse, FALSE);
+    g_signal_connect(btn_browse, "clicked", G_CALLBACK(on_browse_local_file_clicked), dialog);
+    gtk_box_append(GTK_BOX(row_url), btn_browse);
+
+    g_lbl_detected = gtk_label_new("Inserisci un URL o seleziona un file per il rilevamento automatico");
     gtk_label_set_xalign(GTK_LABEL(g_lbl_detected), 0.0);
     gtk_widget_add_css_class(g_lbl_detected, "detect-label");
 
@@ -2834,23 +3067,23 @@ static void show_add_dialog_prefilled(GtkWindow *parent, const char *pre_url, co
     gtk_widget_add_css_class(sep, "form-sep");
 
     /* Filename field */
-    GtkWidget *lbl_n = gtk_label_new("Destination filename");
+    GtkWidget *lbl_n = gtk_label_new("Nome file destinazione");
     gtk_label_set_xalign(GTK_LABEL(lbl_n), 0.0);
     gtk_widget_add_css_class(lbl_n, "form-label");
 
     GtkWidget *hint = gtk_label_new(
-        "Leave blank to use the filename from the URL. "
-        "The extension is added automatically.");
+        "Lascia vuoto per usare il nome file originario. "
+        "L'estensione viene aggiunta automaticamente.");
     gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
     gtk_label_set_wrap(GTK_LABEL(hint), TRUE);
     gtk_widget_add_css_class(hint, "form-hint");
 
     g_entry_name = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(g_entry_name), "e.g. my_game");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_entry_name), "es. my_game");
     gtk_widget_add_css_class(g_entry_name, "form-entry");
 
     /* Password field (for compressed files) */
-    GtkWidget *lbl_p = gtk_label_new("Password (only if compressed .rar/.zip)");
+    GtkWidget *lbl_p = gtk_label_new("Password (solo se archivio compresso .rar/.zip)");
     gtk_label_set_xalign(GTK_LABEL(lbl_p), 0.0);
     gtk_widget_add_css_class(lbl_p, "form-label");
 
@@ -2859,21 +3092,21 @@ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
     populate_password_combo(g_entry_pass_single);
     GtkWidget *child_entry = gtk_combo_box_get_child(GTK_COMBO_BOX(g_entry_pass_single));
     if (child_entry && GTK_IS_ENTRY(child_entry)) {
-        gtk_entry_set_placeholder_text(GTK_ENTRY(child_entry), "Leave blank if no password");
+        gtk_entry_set_placeholder_text(GTK_ENTRY(child_entry), "Lascia vuoto se senza password");
     }
 G_GNUC_END_IGNORE_DEPRECATIONS
     gtk_widget_add_css_class(g_entry_pass_single, "form-entry");
 
     /* FTP destination info */
     char ftp_info[512];
-    snprintf(ftp_info, sizeof(ftp_info), "Destination → ftp://%s:%d/%s/",
+    snprintf(ftp_info, sizeof(ftp_info), "Destinazione → ftp://%s:%d/%s/",
              g_ftp_host, g_ftp_port, g_ftp_dir);
     GtkWidget *lbl_ftp = gtk_label_new(ftp_info);
     gtk_label_set_xalign(GTK_LABEL(lbl_ftp), 0.0);
     gtk_widget_add_css_class(lbl_ftp, "detect-label");
 
     gtk_box_append(GTK_BOX(form), lbl_u);
-    gtk_box_append(GTK_BOX(form), g_entry_url);
+    gtk_box_append(GTK_BOX(form), row_url);
     gtk_box_append(GTK_BOX(form), g_lbl_detected);
     gtk_box_append(GTK_BOX(form), sep);
     gtk_box_append(GTK_BOX(form), lbl_n);
@@ -6358,11 +6591,18 @@ static void on_clipboard_text_received(GObject *source, GAsyncResult *res, gpoin
     char *text = gdk_clipboard_read_text_finish(c, res, &err);
     if (text && text[0]) {
         char *clean = g_strstrip(g_strdup(text));
-        if (strncmp(clean, "http", 4) == 0) {
+        if (g_ascii_strncasecmp(clean, "chrome://", 9) == 0 ||
+            g_ascii_strncasecmp(clean, "chrome-extension://", 19) == 0 ||
+            g_ascii_strncasecmp(clean, "edge://", 7) == 0 ||
+            g_ascii_strncasecmp(clean, "about:", 6) == 0 ||
+            g_ascii_strncasecmp(clean, "javascript:", 11) == 0 ||
+            g_ascii_strncasecmp(clean, "blob:", 5) == 0) {
+            show_toast("Protocollo browser non supportato (chrome://)");
+        } else if (strncmp(clean, "http", 4) == 0 || clean[0] == '/' || strncmp(clean, "file://", 7) == 0) {
             gtk_editable_set_text(GTK_EDITABLE(e), clean);
-            show_toast("Link incollato dagli appunti!");
+            show_toast("Link/Percorso incollato dagli appunti!");
         } else {
-            show_toast("Il testo negli appunti non è un link http(s)!");
+            show_toast("Il testo negli appunti non è un link http(s) o file valido!");
         }
         g_free(clean);
         g_free(text);
@@ -6382,6 +6622,33 @@ static void on_paste_clipboard_to_entry(GtkButton *btn, gpointer user_data) {
     gdk_clipboard_read_text_async(cb, NULL, on_clipboard_text_received, entry);
 }
 
+static void on_browse_direct_finish(GObject *source, GAsyncResult *res, gpointer user_data) {
+    GtkWidget *entry = (GtkWidget *)user_data;
+    GtkFileDialog *dialog = GTK_FILE_DIALOG(source);
+    GError *err = NULL;
+    GFile *file = gtk_file_dialog_open_finish(dialog, res, &err);
+    if (file) {
+        char *path = g_file_get_path(file);
+        if (path && entry && GTK_IS_ENTRY(entry)) {
+            gtk_editable_set_text(GTK_EDITABLE(entry), path);
+        }
+        if (path) g_free(path);
+        g_object_unref(file);
+    } else if (err) {
+        g_error_free(err);
+    }
+}
+
+static void on_browse_direct_file_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    GtkWidget *entry = (GtkWidget *)user_data;
+    GtkRoot *root = gtk_widget_get_root(entry);
+    GtkWindow *win = (root && GTK_IS_WINDOW(root)) ? GTK_WINDOW(root) : GTK_WINDOW(g_window);
+    GtkFileDialog *dialog = gtk_file_dialog_new();
+    gtk_file_dialog_set_title(dialog, "Seleziona archivio o pacchetto scaricato (.pkg, .rar, .7z, .zip)");
+    gtk_file_dialog_open(dialog, win, NULL, on_browse_direct_finish, entry);
+}
+
 static void on_start_direct_dl_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     DlpsDirectDlData *data = (DlpsDirectDlData *)user_data;
@@ -6389,7 +6656,7 @@ static void on_start_direct_dl_clicked(GtkButton *btn, gpointer user_data) {
 
     const char *raw_url = gtk_editable_get_text(GTK_EDITABLE(data->entry_url));
     if (!raw_url || strlen(raw_url) < (size_t)URL_MIN_LEN) {
-        show_toast("Inserisci prima il link diretto del file .pkg!");
+        show_toast("Inserisci prima il link diretto del file .pkg o percorso locale!");
         return;
     }
 
@@ -6398,20 +6665,33 @@ static void on_start_direct_dl_clicked(GtkButton *btn, gpointer user_data) {
     url[sizeof(url) - 1] = '\0';
     g_strstrip(url);
 
-    if (strstr(url, "downloadgameps3.net") || strstr(url, "dlpsgame.com") || strstr(url, "filecrypt.cc")) {
-        if (g_uc_enabled && is_uc_resolver_available()) {
-            trigger_uc_resolve(url, data->game_title[0] ? data->game_title : "Game", data->password, data->dialog, NULL);
-            free(data);
-            return;
-        }
-        show_toast("Attenzione: link protetto! Abilita Undetected ChromeDriver o sbloccalo nel browser.");
+    if (g_ascii_strncasecmp(url, "chrome://", 9) == 0 ||
+        g_ascii_strncasecmp(url, "chrome-extension://", 19) == 0 ||
+        g_ascii_strncasecmp(url, "edge://", 7) == 0 ||
+        g_ascii_strncasecmp(url, "about:", 6) == 0 ||
+        g_ascii_strncasecmp(url, "javascript:", 11) == 0 ||
+        g_ascii_strncasecmp(url, "blob:", 5) == 0) {
+        show_toast("Protocollo browser non valido (chrome://). Incolla il link reale o il percorso locale.");
         return;
     }
 
-    if (strstr(url, "mediafire.com/file/")) {
-        trigger_mediafire_resolve(url, data->game_title, data->password, data->dialog, NULL);
-        free(data);
-        return;
+    gboolean is_local = (url[0] == '/' || strncmp(url, "file://", 7) == 0);
+    if (!is_local) {
+        if (strstr(url, "downloadgameps3.net") || strstr(url, "dlpsgame.com") || strstr(url, "filecrypt.cc")) {
+            if (g_uc_enabled && is_uc_resolver_available()) {
+                trigger_uc_resolve(url, data->game_title[0] ? data->game_title : "Game", data->password, data->dialog, NULL);
+                free(data);
+                return;
+            }
+            show_toast("Attenzione: link protetto! Abilita Undetected ChromeDriver o sbloccalo nel browser.");
+            return;
+        }
+
+        if (strstr(url, "mediafire.com/file/")) {
+            trigger_mediafire_resolve(url, data->game_title, data->password, data->dialog, NULL);
+            free(data);
+            return;
+        }
     }
 
     char dest_name[256];
@@ -6708,6 +6988,12 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     g_signal_connect(btn_paste, "clicked", G_CALLBACK(on_paste_clipboard_to_entry), entry_direct);
     gtk_box_append(GTK_BOX(row_input), btn_paste);
 
+    GtkWidget *btn_browse_direct = gtk_button_new_with_label("Sfoglia File...");
+    gtk_widget_add_css_class(btn_browse_direct, "btn-copy-link");
+    gtk_widget_set_focusable(btn_browse_direct, FALSE);
+    g_signal_connect(btn_browse_direct, "clicked", G_CALLBACK(on_browse_direct_file_clicked), entry_direct);
+    gtk_box_append(GTK_BOX(row_input), btn_browse_direct);
+
     DlpsDirectDlData *ddd = malloc(sizeof(DlpsDirectDlData));
     ddd->entry_url = entry_direct;
     strncpy(ddd->game_title, game->title, sizeof(ddd->game_title) - 1);
@@ -6801,11 +7087,20 @@ static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list
 
     gtk_box_append(GTK_BOX(card), info_col);
 
-    GtkWidget *btn = gtk_button_new_with_label("Dettagli e Link");
+    GtkWidget *btn_col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+    gtk_widget_set_valign(btn_col, GTK_ALIGN_CENTER);
+
+    GtkWidget *btn_auto = gtk_button_new_with_label("Scarica Subito");
+    gtk_widget_add_css_class(btn_auto, "btn-primary");
+    gtk_widget_set_focusable(btn_auto, FALSE);
+    gtk_box_append(GTK_BOX(btn_col), btn_auto);
+
+    GtkWidget *btn = gtk_button_new_with_label("Dettagli");
     gtk_widget_add_css_class(btn, "btn-install");
-    gtk_widget_set_valign(btn, GTK_ALIGN_CENTER);
     gtk_widget_set_focusable(btn, FALSE);
-    gtk_box_append(GTK_BOX(card), btn);
+    gtk_box_append(GTK_BOX(btn_col), btn);
+
+    gtk_box_append(GTK_BOX(card), btn_col);
 
     g_object_set_data(G_OBJECT(card), "img", img);
     g_object_set_data(G_OBJECT(card), "title", lbl_title);
@@ -6817,6 +7112,7 @@ static void on_dlps_item_setup(GtkSignalListItemFactory *self, GtkListItem *list
     g_object_set_data(G_OBJECT(card), "pass", lbl_pass);
     g_object_set_data(G_OBJECT(card), "links", lbl_links);
     g_object_set_data(G_OBJECT(card), "btn", btn);
+    g_object_set_data(G_OBJECT(card), "btn_auto", btn_auto);
 
     gtk_list_item_set_child(list_item, card);
 }
@@ -6837,6 +7133,7 @@ static void on_dlps_item_bind(GtkSignalListItemFactory *self, GtkListItem *list_
     GtkWidget *lbl_pass = g_object_get_data(G_OBJECT(card), "pass");
     GtkWidget *lbl_links = g_object_get_data(G_OBJECT(card), "links");
     GtkWidget *btn = g_object_get_data(G_OBJECT(card), "btn");
+    GtkWidget *btn_auto = g_object_get_data(G_OBJECT(card), "btn_auto");
 
     gtk_label_set_text(GTK_LABEL(lbl_title), obj->game->title);
 
@@ -6900,6 +7197,16 @@ static void on_dlps_item_bind(GtkSignalListItemFactory *self, GtkListItem *list_
     gtk_picture_set_paintable(GTK_PICTURE(img), NULL);
     if (obj->game->cover_url[0]) {
         load_icon_async(obj->game->cover_url, img, 100, 121);
+    }
+
+    if (btn_auto) {
+        if (obj->game->n_links > 0) {
+            gtk_widget_set_visible(btn_auto, TRUE);
+            g_signal_handlers_disconnect_by_func(btn_auto, G_CALLBACK(on_dlps_auto_clicked), NULL);
+            g_signal_connect(btn_auto, "clicked", G_CALLBACK(on_dlps_auto_clicked), (gpointer)obj->game);
+        } else {
+            gtk_widget_set_visible(btn_auto, FALSE);
+        }
     }
 
     g_signal_handlers_disconnect_by_func(btn, G_CALLBACK(on_dlps_card_details_clicked), NULL);

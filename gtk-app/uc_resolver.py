@@ -432,12 +432,23 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
     import undetected_chromedriver as uc
     from selenium.webdriver.common.by import By
 
+    import tempfile
+    temp_profile_dir = tempfile.mkdtemp(prefix="ps_uc_")
+
     options = uc.ChromeOptions()
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    prefs = {
+        "download.default_directory": "/dev/null",
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": False,
+        "plugins.always_open_pdf_externally": True,
+    }
+    options.add_experimental_option("prefs", prefs)
     if headless:
         # Off-screen window avoids Cloudflare Turnstile's headless bot detection
         # while keeping the browser completely invisible to the user desktop
@@ -450,6 +461,7 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
     try:
         driver = uc.Chrome(
             options=options,
+            user_data_dir=temp_profile_dir,
             browser_executable_path=browser_bin,
             use_subprocess=True
         )
@@ -709,6 +721,11 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
         if driver:
             try:
                 driver.quit()
+            except Exception:
+                pass
+        if 'temp_profile_dir' in locals() and temp_profile_dir and os.path.exists(temp_profile_dir):
+            try:
+                shutil.rmtree(temp_profile_dir, ignore_errors=True)
             except Exception:
                 pass
 
