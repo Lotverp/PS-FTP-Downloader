@@ -197,18 +197,17 @@ bool net_init(void) {
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_HTTP);
     sceSysmoduleLoadModuleInternal(ORBIS_SYSMODULE_INTERNAL_SSL);
 
-    if (s_netMemId == 0 || s_httpCtxId == 0) {
+    if (s_netMemId <= 0 || s_httpCtxId <= 0) {
         sceNetInit();
-        s_netMemId = sceNetPoolCreate("netPool", 64 * 1024, 0);
-        if (s_netMemId < 0) return false;
+        s_netMemId = sceNetPoolCreate("netPool", 4 * 1024, 0);
 
         s_sslCtxId = sceSslInit(128 * 1024);
-        if (s_sslCtxId < 0) return false;
 
-        s_httpCtxId = sceHttpInit(s_netMemId, s_sslCtxId, 128 * 1024);
-        if (s_httpCtxId < 0) return false;
+        int net_id = s_netMemId > 0 ? s_netMemId : 0;
+        int ssl_id = s_sslCtxId > 0 ? s_sslCtxId : 0;
+        s_httpCtxId = sceHttpInit(net_id, ssl_id, 128 * 1024);
     }
-    return true;
+    return (s_httpCtxId > 0);
 }
 
 void net_cleanup(void) {

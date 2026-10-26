@@ -12,83 +12,95 @@ int main(int argc, char *argv[]) {
     (void)argc;
     (void)argv;
 
-    printf("[PS4-App] Inizializzazione PS4 Direct Downloader...\n");
+    /* Disable stdio buffering for immediate output */
+    setvbuf(stdout, NULL, _IONBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
 
-    /* Initialize Networking (curl on desktop, SceHttp/SceNet on PS4) */
+    printf("[PS4-App] Avvio PS4 Direct Downloader...\n");
+
+    /* Initialize Networking (non-fatal if network takes time to connect) */
     if (!net_init()) {
-        fprintf(stderr, "[PS4-App] Errore inizializzazione rete!\n");
-        return 1;
+        printf("[PS4-App] Inizializzazione rete in corso...\n");
     }
 
-    /* Initialize app configuration and download subsystem */
     config_init();
     downloader_init();
 
-    /* Initialize SDL2 */
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) < 0) {
-        fprintf(stderr, "[PS4-App] SDL_Init fallita: %s\n", SDL_GetError());
-        net_cleanup();
-        return 1;
+    /* Initialize SDL2 subsystems */
+#ifdef __ORBIS__
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) < 0) {
+        printf("[PS4-App] SDL_Init fallback a VIDEO: %s\n", SDL_GetError());
+        SDL_Init(SDL_INIT_VIDEO);
     }
-
-    /* Open available game controllers (DualShock 4 / DualSense / XInput) */
+    SDL_Joystick *joystick = NULL;
+    if (SDL_NumJoysticks() > 0) {
+        joystick = SDL_JoystickOpen(0);
+        if (joystick) {
+            printf("[PS4-App] Controller Joystick PS4 aperto con successo.\n");
+        }
+    }
+#else
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK | SDL_INIT_EVENTS) < 0) {
+        fprintf(stderr, "[PS4-App] SDL_Init fallita: %s\n", SDL_GetError());
+    }
     int num_joysticks = SDL_NumJoysticks();
     for (int i = 0; i < num_joysticks; i++) {
         if (SDL_IsGameController(i)) {
-            SDL_GameController *pad = SDL_GameControllerOpen(i);
-            if (pad) {
-                printf("[PS4-App] Controller rilevato: %s\n", SDL_GameControllerName(pad));
-            }
+            SDL_GameControllerOpen(i);
         }
     }
-
-    /* Create Window & Renderer */
-    Uint32 window_flags = SDL_WINDOW_SHOWN;
-#ifdef __ORBIS__
-    /* On PS4 OrbisOS, run fullscreen 1080p */
-    window_flags |= SDL_WINDOW_FULLSCREEN;
-    int win_w = 1920;
-    int win_h = 1080;
-#else
-    /* On Desktop Simulator, default to 1280x720 resizable window */
-    window_flags |= SDL_WINDOW_RESIZABLE;
-    int win_w = 1280;
-    int win_h = 720;
 #endif
 
-    SDL_Window *window = SDL_CreateWindow(
+    SDL_Window *window = NULL;
+    SDL_Renderer *renderer = NULL;
+
+#ifdef __ORBIS__
+    /* On PS4: create full HD 1080p window and software renderer on the window surface */
+    window = SDL_CreateWindow(
+        "PS4 Direct Downloader",
+        SDL_WINDOWPOS_UNDEFINED,
+        SDL_WINDOWPOS_UNDEFINED,
+        1920,
+        1080,
+        0
+    );
+
+    if (window) {
+        SDL_Surface *surface = SDL_GetWindowSurface(window);
+        if (surface) {
+            renderer = SDL_CreateSoftwareRenderer(surface);
+        }
+    }
+#else
+    /* On Desktop Simulator */
+    window = SDL_CreateWindow(
         "PS4 Direct Downloader (Simulation & Native)",
         SDL_WINDOWPOS_CENTERED,
         SDL_WINDOWPOS_CENTERED,
-        win_w,
-        win_h,
-        window_flags
+        1280,
+        720,
+        SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE
     );
 
-    if (!window) {
-        fprintf(stderr, "[PS4-App] Creazione finestra fallita: %s\n", SDL_GetError());
-        SDL_Quit();
-        net_cleanup();
-        return 1;
+    if (window) {
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+        if (renderer) {
+            SDL_RenderSetLogicalSize(renderer, 1920, 1080);
+            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+        }
     }
-
-    SDL_Renderer *renderer = SDL_CreateRenderer(
-        window,
-        -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC
-    );
+#endif
 
     if (!renderer) {
-        fprintf(stderr, "[PS4-App] Creazione renderer fallita: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window);
+        printf("[PS4-App] Errore creazione renderer! Uscita controllata...\n");
+        for (int i = 0; i < 30; i++) {
+            SDL_Delay(100);
+        }
+        if (window) SDL_DestroyWindow(window);
         SDL_Quit();
         net_cleanup();
-        return 1;
+        return 0;
     }
-
-    /* Logical 1080p resolution ensures uniform rendering across any TV/monitor */
-    SDL_RenderSetLogicalSize(renderer, 1920, 1080);
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
 
     /* Initialize UI */
     ui_init(renderer);
@@ -103,8 +115,6 @@ int main(int argc, char *argv[]) {
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) {
                 running = false;
-            } else if (event.type == SDL_CONTROLLERDEVICEADDED) {
-                SDL_GameControllerOpen(event.cdevice.which);
             } else if (event.type == SDL_KEYDOWN) {
                 if (event.key.keysym.sym == SDLK_ESCAPE) {
                     running = false;
@@ -119,6 +129,12 @@ int main(int argc, char *argv[]) {
         downloader_update_metrics();
         ui_render(renderer);
 
+#ifdef __ORBIS__
+        if (window) {
+            SDL_UpdateWindowSurface(window);
+        }
+#endif
+
         /* 60 FPS frame limiter */
         Uint32 frame_time = SDL_GetTicks() - last_ticks;
         if (frame_time < 16) {
@@ -131,6 +147,10 @@ int main(int argc, char *argv[]) {
     downloader_stop();
     ui_destroy();
     config_save();
+
+#ifdef __ORBIS__
+    if (joystick) SDL_JoystickClose(joystick);
+#endif
 
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);

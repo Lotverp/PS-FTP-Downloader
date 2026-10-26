@@ -150,12 +150,29 @@ static void draw_text(SDL_Renderer *r, const char *str, int x, int y, int scale,
     }
 }
 
-static void load_catalog_async(void) {
+#include <pthread.h>
+
+static void *catalog_thread_fn(void *arg) {
+    (void)arg;
     s_loading = true;
     dlps_fetch_catalog(g_ui.search_query, g_ui.current_page, g_ui.console_filter, &s_catalog);
     s_loading = false;
     if (g_ui.selected_index >= s_catalog.count) {
         g_ui.selected_index = s_catalog.count > 0 ? s_catalog.count - 1 : 0;
+    }
+    return NULL;
+}
+
+static void load_catalog_async(void) {
+    if (s_loading) return;
+    pthread_t th;
+    if (pthread_create(&th, NULL, catalog_thread_fn, NULL) == 0) {
+        pthread_detach(th);
+    } else {
+        /* Fallback synchronous */
+        s_loading = true;
+        dlps_fetch_catalog(g_ui.search_query, g_ui.current_page, g_ui.console_filter, &s_catalog);
+        s_loading = false;
     }
 }
 
@@ -320,8 +337,26 @@ void ui_render(SDL_Renderer *renderer) {
     render_footer(renderer);
     render_toast(renderer);
 
+#ifndef __ORBIS__
     SDL_RenderPresent(renderer);
+#endif
 }
+
+enum OrbisPadButtons {
+    ORBIS_PAD_CROSS       = 0,
+    ORBIS_PAD_CIRCLE      = 1,
+    ORBIS_PAD_SQUARE      = 2,
+    ORBIS_PAD_TRIANGLE    = 3,
+    ORBIS_PAD_L1          = 4,
+    ORBIS_PAD_R1          = 5,
+    ORBIS_PAD_OPTIONS     = 9,
+    ORBIS_PAD_UP          = 13,
+    ORBIS_PAD_DOWN        = 14,
+    ORBIS_PAD_LEFT        = 15,
+    ORBIS_PAD_RIGHT       = 16,
+    ORBIS_PAD_L2          = 18,
+    ORBIS_PAD_R2          = 19
+};
 
 void ui_handle_input(SDL_Event *e) {
     if (e->type == SDL_KEYDOWN) {
@@ -353,6 +388,54 @@ void ui_handle_input(SDL_Event *e) {
                 g_ui.current_page--;
                 load_catalog_async();
             }
+        } else if (k == SDLK_TAB || k == SDLK_c) {
+            /* Switch filter */
+            g_ui.console_filter = (g_ui.console_filter + 1) % 4;
+            g_ui.current_page = 1;
+            g_ui.selected_index = 0;
+            load_catalog_async();
+        }
+    } else if (e->type == SDL_JOYBUTTONDOWN) {
+        Uint8 b = e->jbutton.button;
+        if (b == ORBIS_PAD_RIGHT) {
+            if (g_ui.selected_index < s_catalog.count - 1) g_ui.selected_index++;
+        } else if (b == ORBIS_PAD_LEFT) {
+            if (g_ui.selected_index > 0) g_ui.selected_index--;
+        } else if (b == ORBIS_PAD_DOWN) {
+            if (g_ui.selected_index + 4 < s_catalog.count) g_ui.selected_index += 4;
+        } else if (b == ORBIS_PAD_UP) {
+            if (g_ui.selected_index - 4 >= 0) g_ui.selected_index -= 4;
+        } else if (b == ORBIS_PAD_CROSS) {
+            if (s_catalog.count > 0 && g_ui.selected_index < s_catalog.count) {
+                GameItem *game = &s_catalog.games[g_ui.selected_index];
+                if (game->n_links > 0) {
+                    ui_show_toast("Avvio download verso /data/pkg...");
+                    downloader_start(game->links[0].url, game->title, game->password);
+                }
+            }
+        } else if (b == ORBIS_PAD_R1) {
+            g_ui.current_page++;
+            load_catalog_async();
+        } else if (b == ORBIS_PAD_L1) {
+            if (g_ui.current_page > 1) {
+                g_ui.current_page--;
+                load_catalog_async();
+            }
+        } else if (b == ORBIS_PAD_L2 || b == ORBIS_PAD_R2) {
+            g_ui.console_filter = (g_ui.console_filter + 1) % 4;
+            g_ui.current_page = 1;
+            g_ui.selected_index = 0;
+            load_catalog_async();
+        }
+    } else if (e->type == SDL_JOYHATMOTION) {
+        if (e->jhat.value & SDL_HAT_RIGHT) {
+            if (g_ui.selected_index < s_catalog.count - 1) g_ui.selected_index++;
+        } else if (e->jhat.value & SDL_HAT_LEFT) {
+            if (g_ui.selected_index > 0) g_ui.selected_index--;
+        } else if (e->jhat.value & SDL_HAT_DOWN) {
+            if (g_ui.selected_index + 4 < s_catalog.count) g_ui.selected_index += 4;
+        } else if (e->jhat.value & SDL_HAT_UP) {
+            if (g_ui.selected_index - 4 >= 0) g_ui.selected_index -= 4;
         }
     } else if (e->type == SDL_CONTROLLERBUTTONDOWN) {
         Uint8 b = e->cbutton.button;
