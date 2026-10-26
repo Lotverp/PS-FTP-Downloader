@@ -3,7 +3,7 @@ TARGET  = ps-ftp-downloader
 SRC     = main.c
 
 PKG_DEPS   = gtk4 libcurl json-glib-1.0 gdk-pixbuf-2.0
-VERSION    = 1.3.8
+VERSION    = 1.3.9
 ARCH       = amd64
 
 CFLAGS  = $(shell pkg-config --cflags $(PKG_DEPS)) -Wall -Wextra -O2 -g

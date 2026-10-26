@@ -39,7 +39,7 @@
  * ═══════════════════════════════════════════════════════════ */
 
 #define APP_ID           "io.psftpdownloader.app"
-#define APP_VERSION      "1.3.8"
+#define APP_VERSION      "1.3.9"
 #define APP_GITHUB_URL   "https://github.com/Lotverp/PS-FTP-Downloader"
 
 #define FTP_HOST_DEFAULT "192.168.1.195"
@@ -659,6 +659,14 @@ static size_t http_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata
             post_update(ctx->dl);
             pipe->cancel = 1;
             return 0; /* abort transfer */
+        }
+        if (ctx->dl->total_size <= 0) {
+            curl_off_t cl = 0;
+            curl_easy_getinfo(ctx->c, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
+            if (cl > 0) {
+                ctx->dl->total_size = cl + ctx->dl->resume_offset + pipe->http_fetched;
+                post_update(ctx->dl);
+            }
         }
         char *ct = NULL;
         curl_easy_getinfo(ctx->c, CURLINFO_CONTENT_TYPE, &ct);
@@ -1476,37 +1484,48 @@ static void *download_thread_fn_internal(void *arg) {
         ProbeInfo pinfo = { 0 };
         pinfo.total_size = -1;
 
-        CURL *probe_c = curl_easy_init();
-        if (probe_c) {
-            curl_common_opts(probe_c, dl->url);
-            CURL_SET(probe_c, CURLOPT_NOSIGNAL,       1L);
-            CURL_SET(probe_c, CURLOPT_URL,            dl->url);
-            CURL_SET(probe_c, CURLOPT_RANGE,          "0-15");
-            CURL_SET(probe_c, CURLOPT_CONNECTTIMEOUT, 15L);
-            CURL_SET(probe_c, CURLOPT_FAILONERROR,    1L);
-            CURL_SET(probe_c, CURLOPT_HEADERFUNCTION, probe_header_cb);
-            CURL_SET(probe_c, CURLOPT_HEADERDATA,     &pinfo);
-            CURL_SET(probe_c, CURLOPT_WRITEFUNCTION,  probe_write_cb);
-            CURL_SET(probe_c, CURLOPT_WRITEDATA,      &pinfo);
-            CURLcode pres = curl_easy_perform(probe_c);
-            if (pres != CURLE_OK) {
-                CURL *head = curl_easy_init();
-                curl_common_opts(head, dl->url);
-                CURL_SET(head, CURLOPT_NOSIGNAL,       1L);
-                CURL_SET(head, CURLOPT_URL,            dl->url);
-                CURL_SET(head, CURLOPT_NOBODY,         1L);
-                CURL_SET(head, CURLOPT_CONNECTTIMEOUT, 15L);
-                CURL_SET(head, CURLOPT_FAILONERROR,    1L);
-                CURL_SET(head, CURLOPT_HEADERFUNCTION, probe_header_cb);
-                CURL_SET(head, CURLOPT_HEADERDATA,     &pinfo);
-                if (curl_easy_perform(head) == CURLE_OK) {
-                    curl_off_t cl = 0;
-                    curl_easy_getinfo(head, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
-                    if (cl > 0) pinfo.total_size = cl;
+        gboolean is_1fichier_direct = (strstr(dl->url, "1fichier.com/c") != NULL ||
+                                       strstr(dl->url, ".1fichier.com/c") != NULL);
+        if (is_1fichier_direct) {
+            /* I token dei link diretti 1fichier sono rigorosamente monouso: una connessione probe
+             * di test (0-15 byte) consuma e invalida il link generando HTTP 410 Gone nel download reale.
+             * Impostiamo direttamente il magic PKG preservando il token per lo streaming verso la PS. */
+            pinfo.magic[0] = 0x7f; pinfo.magic[1] = 'C'; pinfo.magic[2] = 'N'; pinfo.magic[3] = 'T';
+            pinfo.magic_len = 4;
+            g_strlcpy(pinfo.content_type, "application/octet-stream", sizeof(pinfo.content_type));
+        } else {
+            CURL *probe_c = curl_easy_init();
+            if (probe_c) {
+                curl_common_opts(probe_c, dl->url);
+                CURL_SET(probe_c, CURLOPT_NOSIGNAL,       1L);
+                CURL_SET(probe_c, CURLOPT_URL,            dl->url);
+                CURL_SET(probe_c, CURLOPT_RANGE,          "0-15");
+                CURL_SET(probe_c, CURLOPT_CONNECTTIMEOUT, 15L);
+                CURL_SET(probe_c, CURLOPT_FAILONERROR,    1L);
+                CURL_SET(probe_c, CURLOPT_HEADERFUNCTION, probe_header_cb);
+                CURL_SET(probe_c, CURLOPT_HEADERDATA,     &pinfo);
+                CURL_SET(probe_c, CURLOPT_WRITEFUNCTION,  probe_write_cb);
+                CURL_SET(probe_c, CURLOPT_WRITEDATA,      &pinfo);
+                CURLcode pres = curl_easy_perform(probe_c);
+                if (pres != CURLE_OK) {
+                    CURL *head = curl_easy_init();
+                    curl_common_opts(head, dl->url);
+                    CURL_SET(head, CURLOPT_NOSIGNAL,       1L);
+                    CURL_SET(head, CURLOPT_URL,            dl->url);
+                    CURL_SET(head, CURLOPT_NOBODY,         1L);
+                    CURL_SET(head, CURLOPT_CONNECTTIMEOUT, 15L);
+                    CURL_SET(head, CURLOPT_FAILONERROR,    1L);
+                    CURL_SET(head, CURLOPT_HEADERFUNCTION, probe_header_cb);
+                    CURL_SET(head, CURLOPT_HEADERDATA,     &pinfo);
+                    if (curl_easy_perform(head) == CURLE_OK) {
+                        curl_off_t cl = 0;
+                        curl_easy_getinfo(head, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
+                        if (cl > 0) pinfo.total_size = cl;
+                    }
+                    curl_easy_cleanup(head);
                 }
-                curl_easy_cleanup(head);
+                curl_easy_cleanup(probe_c);
             }
-            curl_easy_cleanup(probe_c);
         }
 
         if (pinfo.total_size > 0) dl->total_size = pinfo.total_size;
@@ -6327,6 +6346,15 @@ typedef struct {
 
 /* Auto-download session: ordered candidate links, tried one after the other */
 typedef struct AutoSession AutoSession;
+struct AutoSession {
+    char title[256];
+    char pass[128];
+    DlpsLink links[DLPS_MAX_LINKS];
+    int n;
+    int idx;
+    char wait_msg[128];
+    gboolean mediafire_dead;
+};
 static void auto_session_next(AutoSession *sess);
 static void auto_session_free(AutoSession *sess);
 static gboolean dlps_dispatch_link(const char *url, const char *title,
@@ -6393,6 +6421,7 @@ static gboolean on_mediafire_resolved_idle(gpointer user_data) {
         start_single_download(res->direct_url, dest_name, res->password);
         auto_session_free(res->sess);
     } else if (res->sess) {
+        res->sess->mediafire_dead = TRUE;
         show_prep_progress("Mediafire non disponibile: tentativo con link successivo...");
         auto_session_next(res->sess);
     } else {
@@ -6507,6 +6536,7 @@ static gboolean on_onefichier_resolved_idle(gpointer user_data) {
         trigger_realdebrid_resolve(res->orig_url, res->game_title, res->password, res->dialog, res->sess);
     } else if (res->sess) {
         if (res->wait_msg[0]) {
+            g_strlcpy(res->sess->wait_msg, res->wait_msg, sizeof(res->sess->wait_msg));
             char buf[200];
             snprintf(buf, sizeof(buf), "1Fichier (%s): provo link successivo...", res->wait_msg);
             show_prep_progress(buf);
@@ -6583,6 +6613,21 @@ static void *onefichier_resolve_thread(void *arg) {
             }
             g_match_info_free(info);
             g_regex_unref(re);
+
+            /* Fallback generico per qualunque link diretto 1fichier con prefisso /c */
+            if (!res->success) {
+                GRegex *re_direct = g_regex_new("href=[\"'](https?://[a-zA-Z0-9.-]*1fichier\\.com/c[0-9a-zA-Z_.-]+)[\"']", 0, 0, NULL);
+                if (g_regex_match(re_direct, chunk.data, 0, &info)) {
+                    char *u = g_match_info_fetch(info, 1);
+                    if (u) {
+                        strncpy(res->direct_url, u, sizeof(res->direct_url) - 1);
+                        res->success = 1;
+                        g_free(u);
+                    }
+                }
+                g_match_info_free(info);
+                g_regex_unref(re_direct);
+            }
 
             if (!res->success) {
                 GRegex *w_re = g_regex_new("You must wait (\\d+\\s*\\w+)", G_REGEX_CASELESS, 0, NULL);
@@ -6800,7 +6845,7 @@ static gboolean on_uc_resolved_idle(gpointer user_data) {
         /* Se il link restituito punta ancora a un hoster gestibile nativamente dall'app */
         if (strstr(res->resolved_url, "mediafire.com/file/")) {
             trigger_mediafire_resolve(res->resolved_url, res->game_title, res->password, NULL, res->sess);
-        } else if (strstr(res->resolved_url, "1fichier.com/") && !strstr(res->resolved_url, "1fichier.com/c/")) {
+        } else if (strstr(res->resolved_url, "1fichier.com/") && !strstr(res->resolved_url, "1fichier.com/c")) {
             trigger_onefichier_resolve(res->resolved_url, res->game_title, res->password, NULL, res->sess);
         } else {
             /* Link diretto estratto da CDN o catturato prima del download nel browser */
@@ -6811,6 +6856,10 @@ static gboolean on_uc_resolved_idle(gpointer user_data) {
             auto_session_free(res->sess);
         }
     } else if (res->sess) {
+        if (strstr(res->error_msg, "rimosso") || strstr(res->error_msg, "FILE_REMOVED") ||
+            strstr(res->error_msg, "DMCA") || strstr(res->error_msg, "ALL_HOSTERS_OFFLINE")) {
+            res->sess->mediafire_dead = TRUE;
+        }
         show_prep_progress("Risolutore UC: tentativo con link successivo...");
         auto_session_next(res->sess);
     } else {
@@ -6877,12 +6926,14 @@ static void *uc_resolve_thread(void *arg) {
     );
     g_ptr_array_free(argv_arr, TRUE);
 
-    if (spawned && exit_status == 0 && stdout_buf) {
+    gboolean json_parsed = FALSE;
+    if (spawned && stdout_buf && stdout_buf[0]) {
         JsonParser *parser = json_parser_new();
         if (json_parser_load_from_data(parser, stdout_buf, -1, NULL)) {
             JsonNode *root = json_parser_get_root(parser);
             if (root && JSON_NODE_HOLDS_OBJECT(root)) {
                 JsonObject *obj = json_node_get_object(root);
+                json_parsed = TRUE;
                 if (json_object_has_member(obj, "success") && json_object_get_boolean_member(obj, "success")) {
                     if (json_object_has_member(obj, "url")) {
                         const char *u = json_object_get_string_member(obj, "url");
@@ -6913,7 +6964,8 @@ static void *uc_resolve_thread(void *arg) {
             }
         }
         g_object_unref(parser);
-    } else {
+    }
+    if (!json_parsed) {
         if (err) {
             strncpy(res->error_msg, err->message, sizeof(res->error_msg) - 1);
             g_error_free(err);
@@ -7004,7 +7056,7 @@ static gboolean url_is_direct_cdn(const char *url) {
         strstr(url, "download.akirabox.com") ||
         strstr(url, "vikingfile.com/d/") ||
         strstr(url, "pixeldrain.com/api/file/") ||
-        strstr(url, "1fichier.com/c/") ||
+        strstr(url, "1fichier.com/c") ||
         strstr(url, "mediafire.com/download") ||
         strstr(url, "?download") ||
         strstr(url, "&export=download"))
@@ -7033,8 +7085,8 @@ static gboolean dlps_dispatch_link(const char *url, const char *title,
         return TRUE;
     }
 
-    /* 1Fichier pagina normale (non il link diretto /c/ già generato) */
-    if (strstr(url, "1fichier.com/") && !strstr(url, "1fichier.com/c/")) {
+    /* 1Fichier pagina normale (non il link diretto /c già generato) */
+    if (strstr(url, "1fichier.com/") && !strstr(url, "1fichier.com/c")) {
         trigger_onefichier_resolve(url, title, pass, NULL, sess);
         return TRUE;
     }
@@ -7135,15 +7187,6 @@ static void clip_watch_arm(const char *title, const char *pass) {
     g_clip_watch.armed = TRUE;
 }
 
-/* Ordered candidate list for one-click download; each failure moves to the next link. */
-struct AutoSession {
-    char title[256];
-    char pass[128];
-    DlpsLink links[DLPS_MAX_LINKS];
-    int n;
-    int idx;
-};
-
 static void auto_session_free(AutoSession *sess) {
     free(sess);
 }
@@ -7179,6 +7222,25 @@ static void auto_session_next(AutoSession *sess) {
         }
         if (dlps_dispatch_link(l->url, sess->title, sess->pass, FALSE, sess))
             return;                            /* session now owned by the started action */
+    }
+
+    /* Tutti i link tentati senza successo: verifica se 1fichier è in attesa IP o se i mirror sono offline */
+    if (sess->wait_msg[0]) {
+        char buf[350];
+        if (sess->mediafire_dead) {
+            snprintf(buf, sizeof(buf), "1Fichier è online ma richiede attesa IP (%s). Il mirror alternativo risulta rimosso per DMCA. Configura Real-Debrid nelle impostazioni per scaricare subito o riprova dopo l'attesa.", sess->wait_msg);
+        } else {
+            snprintf(buf, sizeof(buf), "1Fichier richiede attesa IP (%s). Configura Real-Debrid per scaricare subito o riprova tra %s.", sess->wait_msg, sess->wait_msg);
+        }
+        show_toast(buf);
+        auto_session_free(sess);
+        return;
+    }
+
+    if (sess->mediafire_dead) {
+        show_toast("Tutti i mirror per questo gioco risultano rimossi (DMCA o link scaduti).");
+        auto_session_free(sess);
+        return;
     }
 
     /* Nessun link risolto automaticamente: avvia la finestra protetta del resolver se disponibile,

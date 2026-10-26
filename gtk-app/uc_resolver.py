@@ -592,10 +592,10 @@ def extract_direct_download_from_hoster(driver, timeout=15, sniffer=None):
 
             # 1fichier
             if "1fichier.com" in curr_url:
-                of_links = driver.find_elements(By.CSS_SELECTOR, "a.ok.btn-general, a.btn-general.btn-orange, a[href*='1fichier.com/c/'], a[href*='a-']")
+                of_links = driver.find_elements(By.CSS_SELECTOR, "a.ok.btn-general, a.btn-general.btn-orange, a[href*='1fichier.com/c'], a[href*='a-']")
                 for l in of_links:
                     href = l.get_attribute("href") or ""
-                    if href.startswith("http") and ("1fichier" in href or "a-" in href or "/c/" in href):
+                    if href.startswith("http") and ("1fichier" in href or "a-" in href or "/c" in href):
                         return href
                 f_btns = driver.find_elements(By.CSS_SELECTOR, "button, input[type='submit'], #submit, a.btn")
                 for fb in f_btns:
@@ -676,6 +676,8 @@ FILECRYPT_HOOK_JS = """
 def natively_resolvable(url):
     """Pagine hoster che l'app sa risolvere da sola senza browser (Mediafire, 1Fichier)."""
     u = (url or "").lower()
+    if "/c" in u and "1fichier.com" in u:
+        return False
     return "mediafire.com/file/" in u or "1fichier.com/" in u
 
 def try_fill_password(driver, password):
@@ -825,6 +827,8 @@ def auto_resolve(driver, url, password, sniffer, headless, deadline):
                             return success_result(driver, cand_direct, "captured_download", detected_password)
                         if not cand_direct:
                             curr = driver.current_url or ""
+                            if any(err_ind in curr.lower() for err_ind in ["error.php", "errno=", "deleted", "notfound", "file_removed"]):
+                                continue
                             if is_direct_stream_url(curr):
                                 cand_direct = curr
                         if not cand_direct:
