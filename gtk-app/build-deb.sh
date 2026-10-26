@@ -4,13 +4,13 @@
 #                 PS FTP Downloader (GTK4)
 #
 #  Usage: ./build-deb.sh
-#  Output: ../ps-ftp-downloader_1.3.1_amd64.deb
+#  Output: ../ps-ftp-downloader_1.3.7_amd64.deb
 # ─────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 PKG_NAME="ps-ftp-downloader"
-PKG_VERSION="1.3.5"
+PKG_VERSION="1.3.7"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
 PKG_DESCRIPTION="Download PKG directly from network to PS via FTP — with split-archive, DLPSGame catalog & Undetected ChromeDriver"
@@ -130,6 +130,9 @@ install -m 0644 "${SCRIPT_DIR}/style.css"                     "${PKG_ROOT}/usr/s
 install -m 0755 "${SCRIPT_DIR}/uc_resolver.py"                "${PKG_ROOT}/usr/share/ps-ftp-downloader/uc_resolver.py"
 install -m 0755 "${SCRIPT_DIR}/setup-bot-resolver.sh"         "${PKG_ROOT}/usr/share/ps-ftp-downloader/setup-bot-resolver.sh"
 install -m 0644 "${SCRIPT_DIR}/github-mark.svg"             "${PKG_ROOT}/usr/share/ps-ftp-downloader/github-mark.svg"
+if [ -f "${SCRIPT_DIR}/ps-ftp-downloader.desktop" ]; then
+    install -m 0644 "${SCRIPT_DIR}/ps-ftp-downloader.desktop" "${PKG_ROOT}/usr/share/applications/ps-ftp-downloader.desktop"
+fi
 if [ -f "${SCRIPT_DIR}/../catalog.json" ]; then
     install -m 0644 "${SCRIPT_DIR}/../catalog.json"         "${PKG_ROOT}/usr/share/ps-ftp-downloader/catalog.json.example"
 fi

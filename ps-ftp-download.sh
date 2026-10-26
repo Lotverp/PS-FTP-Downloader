@@ -29,7 +29,7 @@ RESET="\033[0m"
 clear
 echo -e "${CYAN}"
 echo "  ============================================"
-echo "           PS FTP Downloader  v1.3.5          "
+echo "           PS FTP Downloader  v1.3.7          "
 echo "    Rete -> PS FTP (Nessuno storage locale)   "
 echo "  ============================================"
 echo -e "${RESET}"

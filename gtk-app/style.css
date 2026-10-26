@@ -563,7 +563,6 @@ popover listview > row label selection {
     font-weight: 700;
     padding: 3px 12px;
     min-width: 66px;
-    text-align: center;
     border-radius: 20px;
     border: 1px solid;
 }
