@@ -119,8 +119,35 @@ int main(int argc, char *argv[]) {
 
     /* Initialize UI */
     ui_init(renderer);
-    dbg_log("[PS4-App] Loop principale avviato (60 FPS)...\n");
+    dbg_log("[PS4-App] UI inizializzata. Avvio draw loop continuo...\n");
 
+#ifdef __ORBIS__
+    /* On PS4: run continuous draw loop without premature desktop exit triggers */
+    Uint32 last_ticks = SDL_GetTicks();
+    for (int frame = 0;; frame++) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            ui_handle_input(&event);
+        }
+
+        downloader_update_metrics();
+        ui_render(renderer);
+
+        if (window) {
+            SDL_UpdateWindowSurface(window);
+        }
+
+        if (frame % 120 == 0) {
+            dbg_log("[PS4-App] Heartbeat attivo: Frame %d (Tick %u, 60 FPS)\n", frame, SDL_GetTicks());
+        }
+
+        Uint32 frame_time = SDL_GetTicks() - last_ticks;
+        if (frame_time < 16) {
+            SDL_Delay(16 - frame_time);
+        }
+        last_ticks = SDL_GetTicks();
+    }
+#else
     bool running = true;
     SDL_Event event;
     Uint32 last_ticks = SDL_GetTicks();
@@ -143,12 +170,6 @@ int main(int argc, char *argv[]) {
         downloader_update_metrics();
         ui_render(renderer);
 
-#ifdef __ORBIS__
-        if (window) {
-            SDL_UpdateWindowSurface(window);
-        }
-#endif
-
         /* 60 FPS frame limiter */
         Uint32 frame_time = SDL_GetTicks() - last_ticks;
         if (frame_time < 16) {
@@ -156,8 +177,9 @@ int main(int argc, char *argv[]) {
         }
         last_ticks = SDL_GetTicks();
     }
+#endif
 
-    printf("[PS4-App] Chiusura applicazione...\n");
+    dbg_log("[PS4-App] Chiusura applicazione...\n");
     downloader_stop();
     ui_destroy();
     config_save();

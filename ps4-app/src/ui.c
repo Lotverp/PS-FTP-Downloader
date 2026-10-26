@@ -151,12 +151,15 @@ static void draw_text(SDL_Renderer *r, const char *str, int x, int y, int scale,
 }
 
 #include <pthread.h>
+#include "debug_log.h"
 
 static void *catalog_thread_fn(void *arg) {
     (void)arg;
+    dbg_log("[PS4-App] Avvio thread fetch catalogo DLPS...\n");
     s_loading = true;
-    dlps_fetch_catalog(g_ui.search_query, g_ui.current_page, g_ui.console_filter, &s_catalog);
+    bool ok = dlps_fetch_catalog(g_ui.search_query, g_ui.current_page, g_ui.console_filter, &s_catalog);
     s_loading = false;
+    dbg_log("[PS4-App] Fetch catalogo terminato (ok=%d, count=%d)\n", (int)ok, s_catalog.count);
     if (g_ui.selected_index >= s_catalog.count) {
         g_ui.selected_index = s_catalog.count > 0 ? s_catalog.count - 1 : 0;
     }
@@ -166,14 +169,16 @@ static void *catalog_thread_fn(void *arg) {
 static void load_catalog_async(void) {
     if (s_loading) return;
     pthread_t th;
-    if (pthread_create(&th, NULL, catalog_thread_fn, NULL) == 0) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, 256 * 1024);
+    if (pthread_create(&th, &attr, catalog_thread_fn, NULL) == 0) {
         pthread_detach(th);
+        dbg_log("[PS4-App] Thread catalogo spawnato asincrono con successo.\n");
     } else {
-        /* Fallback synchronous */
-        s_loading = true;
-        dlps_fetch_catalog(g_ui.search_query, g_ui.current_page, g_ui.console_filter, &s_catalog);
-        s_loading = false;
+        dbg_log("[PS4-App] AVVISO: pthread_create fallito, catalogo rimandato.\n");
     }
+    pthread_attr_destroy(&attr);
 }
 
 bool ui_init(SDL_Renderer *renderer) {
