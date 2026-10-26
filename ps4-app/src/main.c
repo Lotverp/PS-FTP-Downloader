@@ -3,11 +3,10 @@
 #include <stdbool.h>
 #include <string.h>
 #include <SDL2/SDL.h>
-#include <curl/curl.h>
-
 #include "config.h"
 #include "downloader.h"
 #include "ui.h"
+#include "net_client.h"
 
 int main(int argc, char *argv[]) {
     (void)argc;
@@ -15,9 +14,9 @@ int main(int argc, char *argv[]) {
 
     printf("[PS4-App] Inizializzazione PS4 Direct Downloader...\n");
 
-    /* Initialize cURL globally */
-    if (curl_global_init(CURL_GLOBAL_ALL) != 0) {
-        fprintf(stderr, "[PS4-App] Errore inizializzazione cURL!\n");
+    /* Initialize Networking (curl on desktop, SceHttp/SceNet on PS4) */
+    if (!net_init()) {
+        fprintf(stderr, "[PS4-App] Errore inizializzazione rete!\n");
         return 1;
     }
 
@@ -28,7 +27,7 @@ int main(int argc, char *argv[]) {
     /* Initialize SDL2 */
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) < 0) {
         fprintf(stderr, "[PS4-App] SDL_Init fallita: %s\n", SDL_GetError());
-        curl_global_cleanup();
+        net_cleanup();
         return 1;
     }
 
@@ -69,7 +68,7 @@ int main(int argc, char *argv[]) {
     if (!window) {
         fprintf(stderr, "[PS4-App] Creazione finestra fallita: %s\n", SDL_GetError());
         SDL_Quit();
-        curl_global_cleanup();
+        net_cleanup();
         return 1;
     }
 
@@ -83,7 +82,7 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "[PS4-App] Creazione renderer fallita: %s\n", SDL_GetError());
         SDL_DestroyWindow(window);
         SDL_Quit();
-        curl_global_cleanup();
+        net_cleanup();
         return 1;
     }
 
@@ -136,7 +135,7 @@ int main(int argc, char *argv[]) {
     SDL_DestroyRenderer(renderer);
     SDL_DestroyWindow(window);
     SDL_Quit();
-    curl_global_cleanup();
+    net_cleanup();
 
     return 0;
 }

@@ -1,107 +1,75 @@
 #include "resolver.h"
+#include "net_client.h"
 #include "cJSON.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <curl/curl.h>
+#include <ctype.h>
 
-typedef struct {
-    char *data;
-    size_t size;
-} MemChunk;
-
-static size_t curl_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
-    size_t realsize = size * nmemb;
-    MemChunk *mem = (MemChunk *)userp;
-    char *ptr = realloc(mem->data, mem->size + realsize + 1);
-    if (!ptr) return 0;
-    mem->data = ptr;
-    memcpy(&(mem->data[mem->size]), contents, realsize);
-    mem->size += realsize;
-    mem->data[mem->size] = '\0';
-    return realsize;
+static void url_encode(const char *src, char *dst, size_t dst_len) {
+    static const char *hex = "0123456789ABCDEF";
+    size_t di = 0;
+    for (size_t i = 0; src[i] && di + 3 < dst_len; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            dst[di++] = c;
+        } else {
+            dst[di++] = '%';
+            dst[di++] = hex[(c >> 4) & 0x0F];
+            dst[di++] = hex[c & 0x0F];
+        }
+    }
+    dst[di] = '\0';
 }
 
 bool resolve_1fichier(const char *url, const char *password, ResolveResult *out) {
     if (!out) return false;
     memset(out, 0, sizeof(ResolveResult));
 
-    CURL *c = curl_easy_init();
-    if (!c) {
-        snprintf(out->error_msg, sizeof(out->error_msg), "cURL init failed");
-        return false;
-    }
-
-    MemChunk chunk = { malloc(1), 0 };
-    if (chunk.data) chunk.data[0] = '\0';
-
     char postfields[512] = "submitz=1";
     if (password && password[0]) {
-        char *esc = curl_easy_escape(c, password, 0);
-        if (esc) {
-            snprintf(postfields, sizeof(postfields), "submitz=1&pass=%s", esc);
-            curl_free(esc);
-        }
+        char enc_pass[256];
+        url_encode(password, enc_pass, sizeof(enc_pass));
+        snprintf(postfields, sizeof(postfields), "submitz=1&pass=%s", enc_pass);
     }
 
-    curl_easy_setopt(c, CURLOPT_URL, url);
-    curl_easy_setopt(c, CURLOPT_POSTFIELDS, postfields);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
-    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
-
-    CURLcode res = curl_easy_perform(c);
-    curl_easy_cleanup(c);
-
-    if (res != CURLE_OK || !chunk.data) {
-        snprintf(out->error_msg, sizeof(out->error_msg), "Connessione 1Fichier fallita");
-        if (chunk.data) free(chunk.data);
+    NetResponse resp;
+    if (!net_post(url, postfields, "application/x-www-form-urlencoded", NULL, &resp) || !resp.data) {
+        snprintf(out->error_msg, sizeof(out->error_msg), "Connessione 1Fichier fallita: %.200s", resp.error_msg);
+        net_response_free(&resp);
         return false;
     }
 
-    /* 1. Check IP cooldown wait limit */
-    const char *w_pos = strstr(chunk.data, "You must wait");
-    if (!w_pos) w_pos = strstr(chunk.data, "you must wait");
-    if (w_pos) {
-        const char *end_w = strstr(w_pos, "…");
-        if (!end_w) end_w = strstr(w_pos, "<");
-        size_t w_len = end_w ? (size_t)(end_w - w_pos) : 24;
-        if (w_len < sizeof(out->wait_msg)) {
-            strncpy(out->wait_msg, w_pos, w_len);
-            out->wait_msg[w_len] = '\0';
-        }
-        snprintf(out->error_msg, sizeof(out->error_msg), "1Fichier: %s", out->wait_msg);
-        free(chunk.data);
+    /* Check for IP wait cooldown */
+    if (strstr(resp.data, "You must wait") || strstr(resp.data, "must wait between downloads") || strstr(resp.data, "devez attendre")) {
+        snprintf(out->wait_msg, sizeof(out->wait_msg), "Limite IP 1Fichier attivo. Attendi il cooldown o usa Real-Debrid.");
+        snprintf(out->error_msg, sizeof(out->error_msg), "Limite IP 1Fichier: download temporaneamente bloccato");
+        net_response_free(&resp);
         return false;
     }
 
-    /* 2. Search for genuine CDN storage link */
-    const char *scan = chunk.data;
-    while ((scan = strstr(scan, "href=\"http")) != NULL) {
-        scan += 6;
-        const char *quote = strchr(scan, '\"');
-        if (!quote) break;
-
+    /* Look for direct storage CDN link: e.g. https://a-XX.1fichier.com/c... */
+    const char *scan = resp.data;
+    while ((scan = strstr(scan, "https://")) != NULL) {
+        const char *quote = strpbrk(scan, "\"\' \r\n<>");
+        if (!quote) quote = scan + strlen(scan);
         size_t len = quote - scan;
-        if (len < sizeof(out->direct_url)) {
+        if (len > 10 && len < 2048) {
             char u[2048];
             strncpy(u, scan, len);
             u[len] = '\0';
 
-            /* Must be storage server: e.g. https://a-XX.1fichier.com/c... */
             if (strstr(u, ".1fichier.com/c") && !strstr(u, ".html") && !strstr(u, ".pl")) {
                 snprintf(out->direct_url, sizeof(out->direct_url), "%s", u);
                 out->success = true;
-                free(chunk.data);
+                net_response_free(&resp);
                 return true;
             }
         }
         scan = quote;
     }
 
-    free(chunk.data);
+    net_response_free(&resp);
     snprintf(out->error_msg, sizeof(out->error_msg), "Link di download 1Fichier non trovato");
     return false;
 }
@@ -110,36 +78,21 @@ bool resolve_mediafire(const char *url, ResolveResult *out) {
     if (!out) return false;
     memset(out, 0, sizeof(ResolveResult));
 
-    CURL *c = curl_easy_init();
-    if (!c) return false;
-
-    MemChunk chunk = { malloc(1), 0 };
-    if (chunk.data) chunk.data[0] = '\0';
-
-    curl_easy_setopt(c, CURLOPT_URL, url);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
-    curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 12L);
-
-    CURLcode res = curl_easy_perform(c);
-    curl_easy_cleanup(c);
-
-    if (res != CURLE_OK || !chunk.data) {
-        snprintf(out->error_msg, sizeof(out->error_msg), "Connessione Mediafire fallita");
-        if (chunk.data) free(chunk.data);
+    NetResponse resp;
+    if (!net_get(url, NULL, &resp) || !resp.data) {
+        snprintf(out->error_msg, sizeof(out->error_msg), "Connessione Mediafire fallita: %.200s", resp.error_msg);
+        net_response_free(&resp);
         return false;
     }
 
-    if (strstr(chunk.data, "error.php") || strstr(chunk.data, "errno=")) {
+    if (strstr(resp.data, "error.php") || strstr(resp.data, "errno=")) {
         snprintf(out->error_msg, sizeof(out->error_msg), "File Mediafire rimosso per DMCA o eliminato");
-        free(chunk.data);
+        net_response_free(&resp);
         return false;
     }
 
-    const char *dl_btn = strstr(chunk.data, "href=\"https://download");
-    if (!dl_btn) dl_btn = strstr(chunk.data, "href=\'https://download");
+    const char *dl_btn = strstr(resp.data, "href=\"https://download");
+    if (!dl_btn) dl_btn = strstr(resp.data, "href=\'https://download");
     if (dl_btn) {
         dl_btn += 6;
         const char *end_q = strpbrk(dl_btn, "\"\' ");
@@ -149,13 +102,13 @@ bool resolve_mediafire(const char *url, ResolveResult *out) {
                 strncpy(out->direct_url, dl_btn, len);
                 out->direct_url[len] = '\0';
                 out->success = true;
-                free(chunk.data);
+                net_response_free(&resp);
                 return true;
             }
         }
     }
 
-    free(chunk.data);
+    net_response_free(&resp);
     snprintf(out->error_msg, sizeof(out->error_msg), "Link download diretto Mediafire non trovato");
     return false;
 }
@@ -168,46 +121,27 @@ bool resolve_realdebrid(const char *url, const char *password, const char *token
         return false;
     }
 
-    CURL *c = curl_easy_init();
-    if (!c) return false;
+    char enc_link[2048];
+    url_encode(url, enc_link, sizeof(enc_link));
 
-    MemChunk chunk = { malloc(1), 0 };
-    if (chunk.data) chunk.data[0] = '\0';
-
-    char auth_header[300];
-    snprintf(auth_header, sizeof(auth_header), "Authorization: Bearer %s", token);
-    struct curl_slist *headers = curl_slist_append(NULL, auth_header);
-
-    char *esc_link = curl_easy_escape(c, url, 0);
-    char *esc_pass = password && password[0] ? curl_easy_escape(c, password, 0) : NULL;
-    char postfields[2048];
-    if (esc_pass) {
-        snprintf(postfields, sizeof(postfields), "link=%s&password=%s", esc_link, esc_pass);
-        curl_free(esc_pass);
+    char postfields[4096];
+    if (password && password[0]) {
+        char enc_pass[256];
+        url_encode(password, enc_pass, sizeof(enc_pass));
+        snprintf(postfields, sizeof(postfields), "link=%s&password=%s", enc_link, enc_pass);
     } else {
-        snprintf(postfields, sizeof(postfields), "link=%s", esc_link);
+        snprintf(postfields, sizeof(postfields), "link=%s", enc_link);
     }
-    if (esc_link) curl_free(esc_link);
 
-    curl_easy_setopt(c, CURLOPT_URL, "https://api.real-debrid.com/rest/1.0/unrestrict/link");
-    curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(c, CURLOPT_POSTFIELDS, postfields);
-    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, curl_write_cb);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
-
-    CURLcode res = curl_easy_perform(c);
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(c);
-
-    if (res != CURLE_OK || !chunk.data) {
-        snprintf(out->error_msg, sizeof(out->error_msg), "Connessione Real-Debrid fallita");
-        if (chunk.data) free(chunk.data);
+    NetResponse resp;
+    if (!net_post("https://api.real-debrid.com/rest/1.0/unrestrict/link", postfields, "application/x-www-form-urlencoded", token, &resp) || !resp.data) {
+        snprintf(out->error_msg, sizeof(out->error_msg), "Connessione Real-Debrid fallita: %.200s", resp.error_msg);
+        net_response_free(&resp);
         return false;
     }
 
-    cJSON *json = cJSON_Parse(chunk.data);
-    free(chunk.data);
+    cJSON *json = cJSON_Parse(resp.data);
+    net_response_free(&resp);
     if (!json) {
         snprintf(out->error_msg, sizeof(out->error_msg), "Risposta Real-Debrid non valida");
         return false;

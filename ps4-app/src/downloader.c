@@ -2,12 +2,12 @@
 #include "resolver.h"
 #include "installer.h"
 #include "config.h"
+#include "net_client.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <unistd.h>
-#include <curl/curl.h>
 
 #define PKG_MAGIC "\x7f\x43\x4e\x54" /* \x7fCNT */
 
@@ -20,7 +20,7 @@ typedef struct {
     int64_t last_bytes;
 } StreamContext;
 
-static size_t dl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+static size_t dl_write_cb(const void *ptr, size_t size, size_t nmemb, void *userdata) {
     StreamContext *ctx = (StreamContext *)userdata;
     size_t total = size * nmemb;
     if (g_active_dl.stop_requested) return 0;
@@ -29,7 +29,7 @@ static size_t dl_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) 
     if (!ctx->checked_magic && total >= 4) {
         ctx->checked_magic = true;
         if (memcmp(ptr, PKG_MAGIC, 4) != 0) {
-            if (strncasecmp(ptr, "<!doc", 5) == 0 || strncasecmp(ptr, "<html", 5) == 0) {
+            if (strncasecmp((const char *)ptr, "<!doc", 5) == 0 || strncasecmp((const char *)ptr, "<html", 5) == 0) {
                 snprintf(g_active_dl.status_message, sizeof(g_active_dl.status_message),
                          "Errore: il server ha restituito una pagina HTML anziché il file .pkg");
             } else {
@@ -100,14 +100,6 @@ static void *downloader_thread_fn(void *arg) {
         return NULL;
     }
 
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        fclose(fp);
-        g_active_dl.status = STATUS_ERROR;
-        snprintf(g_active_dl.status_message, sizeof(g_active_dl.status_message), "cURL init failed");
-        return NULL;
-    }
-
     g_active_dl.status = STATUS_DOWNLOADING;
     snprintf(g_active_dl.status_message, sizeof(g_active_dl.status_message), "Download in corso...");
     g_active_dl.downloaded_size = 0;
@@ -119,23 +111,9 @@ static void *downloader_thread_fn(void *arg) {
     ctx.fp = fp;
     clock_gettime(CLOCK_MONOTONIC, &ctx.last_time);
 
-    curl_easy_setopt(curl, CURLOPT_URL, res.direct_url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, dl_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &ctx);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 10L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, 40L);
+    char err_buf[256] = "";
+    bool success = net_download_file(res.direct_url, g_active_dl.dest_path, dl_write_cb, &ctx, err_buf, sizeof(err_buf));
 
-    CURLcode code = curl_easy_perform(curl);
-
-    /* Get total size if known */
-    curl_off_t cl = 0;
-    curl_easy_getinfo(curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
-    if (cl > 0) g_active_dl.total_size = cl;
-
-    curl_easy_cleanup(curl);
     fclose(fp);
 
     if (g_active_dl.stop_requested) {
@@ -145,9 +123,10 @@ static void *downloader_thread_fn(void *arg) {
         return NULL;
     }
 
-    if (code != CURLE_OK && g_active_dl.status != STATUS_ERROR) {
+    if (!success && g_active_dl.status != STATUS_ERROR) {
         g_active_dl.status = STATUS_ERROR;
-        snprintf(g_active_dl.status_message, sizeof(g_active_dl.status_message), "Errore scaricamento: %s", curl_easy_strerror(code));
+        snprintf(g_active_dl.status_message, sizeof(g_active_dl.status_message), "Errore scaricamento: %s", err_buf[0] ? err_buf : "Connessione interrotta");
+        unlink(g_active_dl.dest_path);
         return NULL;
     }
 

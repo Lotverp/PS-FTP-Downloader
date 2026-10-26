@@ -4,35 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <curl/curl.h>
 
 #define DLPS_API_ENDPOINT "https://dlpsgame.com/wp-json/wp/v2/posts"
-
-typedef struct {
-    char *data;
-    size_t size;
-} MemoryBuffer;
-
-static size_t mem_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
-    size_t realsize = size * nmemb;
-    MemoryBuffer *mem = (MemoryBuffer *)userp;
-    char *ptr = realloc(mem->data, mem->size + realsize + 1);
-    if (!ptr) return 0;
-    mem->data = ptr;
-    memcpy(&(mem->data[mem->size]), contents, realsize);
-    mem->size += realsize;
-    mem->data[mem->size] = 0;
-    return realsize;
-}
-
-static size_t header_cb(char *buffer, size_t size, size_t nitems, void *userdata) {
-    size_t total = size * nitems;
-    int *totalPages = (int *)userdata;
-    if (strncasecmp(buffer, "x-wp-totalpages:", 16) == 0) {
-        *totalPages = atoi(buffer + 16);
-    }
-    return total;
-}
 
 static LinkType detect_link_type(const char *url) {
     if (!url) return LINK_UNKNOWN;
@@ -100,12 +73,22 @@ static char *base64_decode(const char *input, size_t *out_len) {
     return out;
 }
 
+static const char *strcasestr_custom(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return NULL;
+    size_t nlen = strlen(needle);
+    if (!nlen) return haystack;
+    for (; *haystack; haystack++) {
+        if (strncasecmp(haystack, needle, nlen) == 0) return haystack;
+    }
+    return NULL;
+}
+
 static void parse_game_payload(const char *html, GameItem *item) {
     if (!html || !item) return;
 
     /* 1. Extract password if present */
-    const char *pw_tag = strcasestr(html, "Password:");
-    if (!pw_tag) pw_tag = strcasestr(html, "Password :");
+    const char *pw_tag = strcasestr_custom(html, "Password:");
+    if (!pw_tag) pw_tag = strcasestr_custom(html, "Password :");
     if (pw_tag) {
         const char *p = pw_tag + strlen("Password:");
         while (*p == ' ' || *p == ':') p++;
@@ -186,17 +169,29 @@ static void parse_game_payload(const char *html, GameItem *item) {
     if (decoded_text) free(decoded_text);
 }
 
+#include "net_client.h"
+
+static void url_encode(const char *src, char *dst, size_t dst_len) {
+    static const char *hex = "0123456789ABCDEF";
+    size_t di = 0;
+    for (size_t i = 0; src[i] && di + 3 < dst_len; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            dst[di++] = c;
+        } else {
+            dst[di++] = '%';
+            dst[di++] = hex[(c >> 4) & 0x0F];
+            dst[di++] = hex[c & 0x0F];
+        }
+    }
+    dst[di] = '\0';
+}
+
 bool dlps_fetch_catalog(const char *query, int page, int console_filter, CatalogResult *out) {
     if (!out) return false;
     memset(out, 0, sizeof(CatalogResult));
     out->current_page = page > 0 ? page : 1;
-    out->total_pages = 1;
-
-    CURL *curl = curl_easy_init();
-    if (!curl) {
-        snprintf(out->error_msg, sizeof(out->error_msg), "Impossibile inizializzare cURL");
-        return false;
-    }
+    out->total_pages = 50;
 
     char url[1024];
     /* console_filter: 0=All, 1=PS4 (cat=11), 2=PS5 (cat=1224), 3=PS3 (cat=3) */
@@ -206,36 +201,22 @@ bool dlps_fetch_catalog(const char *query, int page, int console_filter, Catalog
     else if (console_filter == 3) cat_param = "&categories=3";
 
     if (query && query[0]) {
-        char *esc = curl_easy_escape(curl, query, 0);
-        snprintf(url, sizeof(url), "%s?search=%s&page=%d&per_page=12%s", DLPS_API_ENDPOINT, esc ? esc : "", out->current_page, cat_param);
-        if (esc) curl_free(esc);
+        char esc[256];
+        url_encode(query, esc, sizeof(esc));
+        snprintf(url, sizeof(url), "%s?search=%s&page=%d&per_page=12%s", DLPS_API_ENDPOINT, esc, out->current_page, cat_param);
     } else {
         snprintf(url, sizeof(url), "%s?page=%d&per_page=12%s", DLPS_API_ENDPOINT, out->current_page, cat_param);
     }
 
-    MemoryBuffer chunk = { malloc(1), 0 };
-    if (chunk.data) chunk.data[0] = '\0';
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (PlayStation 4 9.00) AppleWebKit/605.1.15 (KHTML, like Gecko)");
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, mem_write_cb);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
-    curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_cb);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &out->total_pages);
-    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 15L);
-
-    CURLcode res = curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
-
-    if (res != CURLE_OK || !chunk.data) {
-        snprintf(out->error_msg, sizeof(out->error_msg), "Errore di rete: %s", curl_easy_strerror(res));
-        if (chunk.data) free(chunk.data);
+    NetResponse resp;
+    if (!net_get(url, NULL, &resp) || !resp.data) {
+        snprintf(out->error_msg, sizeof(out->error_msg), "Errore di rete: %.200s", resp.error_msg);
+        net_response_free(&resp);
         return false;
     }
 
-    cJSON *root = cJSON_Parse(chunk.data);
-    free(chunk.data);
+    cJSON *root = cJSON_Parse(resp.data);
+    net_response_free(&resp);
     if (!root || !cJSON_IsArray(root)) {
         snprintf(out->error_msg, sizeof(out->error_msg), "Formato catalogo non valido");
         if (root) cJSON_Delete(root);
