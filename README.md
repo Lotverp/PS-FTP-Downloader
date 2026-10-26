@@ -136,7 +136,7 @@ Il Package Installer di GoldHEN cerca i file `.pkg` da installare all'interno de
 
 Scarica il pacchetto `.deb` rilasciato nella sezione [Releases](../../releases) oppure compilalo localmente, quindi installalo con:
 ```bash
-sudo apt install -y ./ps-ftp-downloader_1.3.9_amd64.deb
+sudo apt install -y ./ps-ftp-downloader_1.3.10_amd64.deb
 ```
 L'applicazione viene integrata nel menu di sistema tra i giochi e gli strumenti di rete. Puoi avviarla dall'elenco applicazioni o digitando da terminale:
 ```bash

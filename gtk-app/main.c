@@ -39,7 +39,7 @@
  * ═══════════════════════════════════════════════════════════ */
 
 #define APP_ID           "io.psftpdownloader.app"
-#define APP_VERSION      "1.3.9"
+#define APP_VERSION      "1.3.10"
 #define APP_GITHUB_URL   "https://github.com/Lotverp/PS-FTP-Downloader"
 
 #define FTP_HOST_DEFAULT "192.168.1.195"
@@ -1484,8 +1484,9 @@ static void *download_thread_fn_internal(void *arg) {
         ProbeInfo pinfo = { 0 };
         pinfo.total_size = -1;
 
-        gboolean is_1fichier_direct = (strstr(dl->url, "1fichier.com/c") != NULL ||
-                                       strstr(dl->url, ".1fichier.com/c") != NULL);
+        gboolean is_1fichier_direct = (strstr(dl->url, ".1fichier.com/c") != NULL &&
+                                       !strstr(dl->url, ".html") &&
+                                       !strstr(dl->url, ".pl"));
         if (is_1fichier_direct) {
             /* I token dei link diretti 1fichier sono rigorosamente monouso: una connessione probe
              * di test (0-15 byte) consuma e invalida il link generando HTTP 410 Gone nel download reale.
@@ -3388,7 +3389,7 @@ G_GNUC_END_IGNORE_DEPRECATIONS
         return;
     }
 
-    if (strstr(url, "1fichier.com/")) {
+    if (strstr(url, "1fichier.com/") && (!strstr(url, ".1fichier.com/c") || strstr(url, ".html") || strstr(url, ".pl"))) {
         trigger_onefichier_resolve(url, (name && name[0]) ? name : "Download", pass, NULL, NULL);
         if (pass) g_free(pass);
         g_entry_url = g_entry_name = g_entry_pass_single = g_lbl_detected = NULL;
@@ -6590,18 +6591,23 @@ static void *onefichier_resolve_thread(void *arg) {
         curl_easy_cleanup(c);
 
         if (cres == CURLE_OK && chunk.data) {
-            GRegex *re = g_regex_new("href=[\"'](https?://[a-zA-Z0-9.-]*1fichier\\.com/[^\\s\"']+)[\"'][^>]*class=[\"'][^\"']*\\bok\\b", 0, 0, NULL);
-            GMatchInfo *info = NULL;
-            if (g_regex_match(re, chunk.data, 0, &info)) {
-                char *u = g_match_info_fetch(info, 1);
-                if (u) {
-                    strncpy(res->direct_url, u, sizeof(res->direct_url) - 1);
-                    res->success = 1;
-                    g_free(u);
+            /* 1. Prima di tutto, verifica se l'IP è in cooldown su 1fichier */
+            GRegex *w_re = g_regex_new("You must wait (\\d+\\s*\\w+)", G_REGEX_CASELESS, 0, NULL);
+            GMatchInfo *w_info = NULL;
+            if (g_regex_match(w_re, chunk.data, 0, &w_info)) {
+                char *w = g_match_info_fetch(w_info, 0);
+                if (w) {
+                    strncpy(res->wait_msg, w, sizeof(res->wait_msg) - 1);
+                    g_free(w);
                 }
-            } else {
-                g_regex_unref(re);
-                re = g_regex_new("class=[\"'][^\"']*\\bok\\b[^>]*href=[\"'](https?://[a-zA-Z0-9.-]*1fichier\\.com/[^\\s\"']+)[\"']", 0, 0, NULL);
+            }
+            g_match_info_free(w_info);
+            g_regex_unref(w_re);
+
+            /* 2. Se NON è in attesa, cerca il link di download verso i server CDN di 1fichier */
+            if (res->wait_msg[0] == '\0') {
+                GRegex *re = g_regex_new("href=[\"'](https?://[a-zA-Z0-9]+-[0-9]+\\.1fichier\\.com/c[0-9a-zA-Z]{6,})[\"'][^>]*class=[\"'][^\"']*\\bok\\b", 0, 0, NULL);
+                GMatchInfo *info = NULL;
                 if (g_regex_match(re, chunk.data, 0, &info)) {
                     char *u = g_match_info_fetch(info, 1);
                     if (u) {
@@ -6609,38 +6615,35 @@ static void *onefichier_resolve_thread(void *arg) {
                         res->success = 1;
                         g_free(u);
                     }
-                }
-            }
-            g_match_info_free(info);
-            g_regex_unref(re);
-
-            /* Fallback generico per qualunque link diretto 1fichier con prefisso /c */
-            if (!res->success) {
-                GRegex *re_direct = g_regex_new("href=[\"'](https?://[a-zA-Z0-9.-]*1fichier\\.com/c[0-9a-zA-Z_.-]+)[\"']", 0, 0, NULL);
-                if (g_regex_match(re_direct, chunk.data, 0, &info)) {
-                    char *u = g_match_info_fetch(info, 1);
-                    if (u) {
-                        strncpy(res->direct_url, u, sizeof(res->direct_url) - 1);
-                        res->success = 1;
-                        g_free(u);
+                } else {
+                    g_regex_unref(re);
+                    re = g_regex_new("class=[\"'][^\"']*\\bok\\b[^>]*href=[\"'](https?://[a-zA-Z0-9]+-[0-9]+\\.1fichier\\.com/c[0-9a-zA-Z]{6,})[\"']", 0, 0, NULL);
+                    if (g_regex_match(re, chunk.data, 0, &info)) {
+                        char *u = g_match_info_fetch(info, 1);
+                        if (u) {
+                            strncpy(res->direct_url, u, sizeof(res->direct_url) - 1);
+                            res->success = 1;
+                            g_free(u);
+                        }
                     }
                 }
                 g_match_info_free(info);
-                g_regex_unref(re_direct);
-            }
+                g_regex_unref(re);
 
-            if (!res->success) {
-                GRegex *w_re = g_regex_new("You must wait (\\d+\\s*\\w+)", G_REGEX_CASELESS, 0, NULL);
-                GMatchInfo *w_info = NULL;
-                if (g_regex_match(w_re, chunk.data, 0, &w_info)) {
-                    char *w = g_match_info_fetch(w_info, 0);
-                    if (w) {
-                        strncpy(res->wait_msg, w, sizeof(res->wait_msg) - 1);
-                        g_free(w);
+                /* Fallback generico per qualsiasi link CDN di storage 1fichier (sottodominio con trattino es. a-12 e token alfanumerico /c) */
+                if (!res->success) {
+                    GRegex *re_direct = g_regex_new("href=[\"'](https?://[a-zA-Z0-9]+-[0-9]+\\.1fichier\\.com/c[0-9a-zA-Z]{6,})[\"']", 0, 0, NULL);
+                    if (g_regex_match(re_direct, chunk.data, 0, &info)) {
+                        char *u = g_match_info_fetch(info, 1);
+                        if (u) {
+                            strncpy(res->direct_url, u, sizeof(res->direct_url) - 1);
+                            res->success = 1;
+                            g_free(u);
+                        }
                     }
+                    g_match_info_free(info);
+                    g_regex_unref(re_direct);
                 }
-                g_match_info_free(w_info);
-                g_regex_unref(w_re);
             }
             free(chunk.data);
         }
@@ -6845,7 +6848,8 @@ static gboolean on_uc_resolved_idle(gpointer user_data) {
         /* Se il link restituito punta ancora a un hoster gestibile nativamente dall'app */
         if (strstr(res->resolved_url, "mediafire.com/file/")) {
             trigger_mediafire_resolve(res->resolved_url, res->game_title, res->password, NULL, res->sess);
-        } else if (strstr(res->resolved_url, "1fichier.com/") && !strstr(res->resolved_url, "1fichier.com/c")) {
+        } else if (strstr(res->resolved_url, "1fichier.com/") &&
+                   (!strstr(res->resolved_url, ".1fichier.com/c") || strstr(res->resolved_url, ".html") || strstr(res->resolved_url, ".pl"))) {
             trigger_onefichier_resolve(res->resolved_url, res->game_title, res->password, NULL, res->sess);
         } else {
             /* Link diretto estratto da CDN o catturato prima del download nel browser */
@@ -6856,6 +6860,14 @@ static gboolean on_uc_resolved_idle(gpointer user_data) {
             auto_session_free(res->sess);
         }
     } else if (res->sess) {
+        if (strstr(res->error_msg, "HOSTER_WAIT_LIMIT") || strstr(res->error_msg, "You must wait")) {
+            const char *p = strstr(res->error_msg, "You must wait");
+            if (p) {
+                g_strlcpy(res->sess->wait_msg, p, sizeof(res->sess->wait_msg));
+            } else {
+                g_strlcpy(res->sess->wait_msg, "attesa IP attiva", sizeof(res->sess->wait_msg));
+            }
+        }
         if (strstr(res->error_msg, "rimosso") || strstr(res->error_msg, "FILE_REMOVED") ||
             strstr(res->error_msg, "DMCA") || strstr(res->error_msg, "ALL_HOSTERS_OFFLINE")) {
             res->sess->mediafire_dead = TRUE;
@@ -7056,7 +7068,7 @@ static gboolean url_is_direct_cdn(const char *url) {
         strstr(url, "download.akirabox.com") ||
         strstr(url, "vikingfile.com/d/") ||
         strstr(url, "pixeldrain.com/api/file/") ||
-        strstr(url, "1fichier.com/c") ||
+        (strstr(url, ".1fichier.com/c") && !strstr(url, ".html") && !strstr(url, ".pl") && !strstr(url, "/console/")) ||
         strstr(url, "mediafire.com/download") ||
         strstr(url, "?download") ||
         strstr(url, "&export=download"))
@@ -7086,7 +7098,7 @@ static gboolean dlps_dispatch_link(const char *url, const char *title,
     }
 
     /* 1Fichier pagina normale (non il link diretto /c già generato) */
-    if (strstr(url, "1fichier.com/") && !strstr(url, "1fichier.com/c")) {
+    if (strstr(url, "1fichier.com/") && (!strstr(url, ".1fichier.com/c") || strstr(url, ".html") || strstr(url, ".pl"))) {
         trigger_onefichier_resolve(url, title, pass, NULL, sess);
         return TRUE;
     }

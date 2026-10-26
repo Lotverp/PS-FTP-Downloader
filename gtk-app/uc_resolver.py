@@ -64,6 +64,7 @@ DIRECT_CDN_PATTERNS = [
     re.compile(r"vikingfile\.com/d/", re.IGNORECASE),
     re.compile(r"pixeldrain\.com/api/file/", re.IGNORECASE),
     re.compile(r"download\d*\.mediafire\.com/", re.IGNORECASE),
+    re.compile(r"https?://[a-zA-Z0-9]+-[0-9]+\.1fichier\.com/c[0-9a-zA-Z]{6,}", re.IGNORECASE),
 ]
 
 def find_browser():
@@ -592,22 +593,27 @@ def extract_direct_download_from_hoster(driver, timeout=15, sniffer=None):
 
             # 1fichier
             if "1fichier.com" in curr_url:
-                of_links = driver.find_elements(By.CSS_SELECTOR, "a.ok.btn-general, a.btn-general.btn-orange, a[href*='1fichier.com/c'], a[href*='a-']")
-                for l in of_links:
-                    href = l.get_attribute("href") or ""
-                    if href.startswith("http") and ("1fichier" in href or "a-" in href or "/c" in href):
-                        return href
-                f_btns = driver.find_elements(By.CSS_SELECTOR, "button, input[type='submit'], #submit, a.btn")
-                for fb in f_btns:
-                    txt = (fb.text or fb.get_attribute("value") or "").lower()
-                    if any(w in txt for w in ["free download", "télécharger", "telecharger", "access to download", "valider"]):
-                        if "⏳" not in txt and fb.is_displayed() and fb.is_enabled():
-                            try:
-                                fb.click()
-                                time.sleep(2.0)
-                            except Exception:
-                                pass
-                            break
+                page_src = driver.page_source or ""
+                if "You must wait" in page_src or "Without subscription, you must wait" in page_src:
+                    pass
+                else:
+                    re_1f = re.compile(r"https?://[a-zA-Z0-9]+-[0-9]+\.1fichier\.com/c[0-9a-zA-Z]{6,}", re.IGNORECASE)
+                    of_links = driver.find_elements(By.CSS_SELECTOR, "a.ok, a.btn-orange, a[href*='1fichier.com']")
+                    for l in of_links:
+                        href = l.get_attribute("href") or ""
+                        if re_1f.search(href):
+                            return href
+                    f_btns = driver.find_elements(By.CSS_SELECTOR, "button, input[type='submit'], #submit, a.btn")
+                    for fb in f_btns:
+                        txt = (fb.text or fb.get_attribute("value") or "").lower()
+                        if any(w in txt for w in ["free download", "télécharger", "telecharger", "access to download", "valider"]):
+                            if "⏳" not in txt and fb.is_displayed() and fb.is_enabled():
+                                try:
+                                    fb.click()
+                                    time.sleep(2.0)
+                                except Exception:
+                                    pass
+                                break
 
             # General download button check
             all_links = driver.find_elements(By.TAG_NAME, "a")
@@ -676,7 +682,7 @@ FILECRYPT_HOOK_JS = """
 def natively_resolvable(url):
     """Pagine hoster che l'app sa risolvere da sola senza browser (Mediafire, 1Fichier)."""
     u = (url or "").lower()
-    if "/c" in u and "1fichier.com" in u:
+    if ".1fichier.com/c" in u and not u.endswith(".html") and not u.endswith(".pl"):
         return False
     return "mediafire.com/file/" in u or "1fichier.com/" in u
 
@@ -888,6 +894,17 @@ def auto_resolve(driver, url, password, sniffer, headless, deadline):
             return success_result(driver, final_url, "resolved_direct_cdn", detected_password)
         if natively_resolvable(final_url):
             return success_result(driver, final_url, "hoster_page", detected_password)
+
+    if "1fichier.com" in current_page or "1fichier.com" in (driver.current_url or ""):
+        page_src = driver.page_source or ""
+        if "You must wait" in page_src or "Without subscription, you must wait" in page_src:
+            m = re.search(r"You must wait (\d+\s*\w+)", page_src, re.IGNORECASE)
+            wait_str = m.group(0) if m else "Attesa IP attiva"
+            return {
+                "success": False,
+                "error": "HOSTER_WAIT_LIMIT",
+                "message": f"1Fichier: {wait_str}. Riprova tra poco o usa Real-Debrid."
+            }
 
     if "filecrypt." in current_page:
         if headless:
