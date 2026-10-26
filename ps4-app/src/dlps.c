@@ -194,11 +194,11 @@ bool dlps_fetch_catalog(const char *query, int page, int console_filter, Catalog
     out->total_pages = 50;
 
     char url[1024];
-    /* console_filter: 0=All, 1=PS4 (cat=11), 2=PS5 (cat=1224), 3=PS3 (cat=3) */
+    /* console_filter: 0=All, 1=PS4 (cat=4370), 2=PS5 (cat=63019), 3=PS3 (cat=64) */
     const char *cat_param = "";
-    if (console_filter == 1) cat_param = "&categories=11";
-    else if (console_filter == 2) cat_param = "&categories=1224";
-    else if (console_filter == 3) cat_param = "&categories=3";
+    if (console_filter == 1) cat_param = "&categories=4370";
+    else if (console_filter == 2) cat_param = "&categories=63019";
+    else if (console_filter == 3) cat_param = "&categories=64";
 
     if (query && query[0]) {
         char esc[256];

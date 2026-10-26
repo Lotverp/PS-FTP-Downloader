@@ -8,6 +8,9 @@
 #include "ui.h"
 #include "net_client.h"
 #include "debug_log.h"
+#ifdef __ORBIS__
+#include <orbis/SystemService.h>
+#endif
 
 int main(int argc, char *argv[]) {
     (void)argc;
@@ -89,7 +92,8 @@ int main(int argc, char *argv[]) {
 #ifdef __ORBIS__
     if (window) {
         SDL_UpdateWindowSurface(window);
-        dbg_log("[PS4-App] Frame 0 inviato a schermo! Logo PS4 superato.\n");
+        sceSystemServiceHideSplashScreen();
+        dbg_log("[PS4-App] Frame 0 inviato e sceSystemServiceHideSplashScreen() chiamato!\n");
     }
 #endif
 

@@ -60,7 +60,7 @@ fi
 
 # 5. Generate GP4 specification and Build Package
 echo "[5/5] Creazione progetto GP4 con PlayGo Scenarios e creazione PKG..."
-FILES_TO_PACK="eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png sce_sys/pic1.png sce_module/libc.prx sce_module/libSceFios2.prx"
+FILES_TO_PACK="eboot.bin sce_sys/about/right.sprx sce_sys/param.sfo sce_sys/icon0.png sce_module/libc.prx sce_module/libSceFios2.prx"
 
 if [ -x "$CREATE_GP4" ]; then
     "$CREATE_GP4" -out app.gp4 --content-id="$CONTENT_ID" --files "$FILES_TO_PACK"

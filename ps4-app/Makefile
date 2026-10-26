@@ -55,7 +55,7 @@ PS4_CFLAGS = --target=x86_64-pc-freebsd12-elf -fPIC -funwind-tables -D__ORBIS__ 
              -isystem $(OO_PS4_TOOLCHAIN)/include/SDL2
 
 PS4_LIBS = -lc -lkernel -lc++ -lSceUserService -lSceVideoOut -lSceAudioOut -lScePad \
-           -lSceSysmodule -lSDL2 -lSceNet -lSceSsl -lSceHttp
+           -lSceSysmodule -lSDL2 -lSceNet -lSceSsl -lSceHttp -lSceSystemService
 
 PS4_LDFLAGS = -m elf_x86_64 -pie --script $(OO_PS4_TOOLCHAIN)/link.x --eh-frame-hdr \
               -L$(OO_PS4_TOOLCHAIN)/lib $(PS4_LIBS) $(OO_PS4_TOOLCHAIN)/lib/crt1.o
