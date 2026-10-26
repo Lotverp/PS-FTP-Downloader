@@ -39,7 +39,7 @@
  * ═══════════════════════════════════════════════════════════ */
 
 #define APP_ID           "io.psftpdownloader.app"
-#define APP_VERSION      "1.3.7"
+#define APP_VERSION      "1.3.8"
 #define APP_GITHUB_URL   "https://github.com/Lotverp/PS-FTP-Downloader"
 
 #define FTP_HOST_DEFAULT "192.168.1.195"
@@ -2304,11 +2304,112 @@ static void find_all_pkgs_recursive(const char *dir, char paths[16][1024], int *
     g_dir_close(d);
 }
 
+static void get_pkg_friendly_tag(const char *fn, int idx, char *tag, size_t tag_sz, int *out_rank) {
+    if (!fn || !tag || tag_sz == 0) return;
+    char lower[512];
+    g_strlcpy(lower, fn, sizeof(lower));
+    for (char *p = lower; *p; p++) *p = (char)g_ascii_tolower(*p);
+
+    int rank = 4;
+    tag[0] = '\0';
+
+    /* 1. Sony Content-ID pattern: -A0100- o -A0000- (Base Game) vs -A0120- (Patch) */
+    const char *a_pos = strstr(lower, "-a");
+    if (a_pos && g_ascii_isdigit(a_pos[2]) && g_ascii_isdigit(a_pos[3]) &&
+        g_ascii_isdigit(a_pos[4]) && g_ascii_isdigit(a_pos[5])) {
+        int maj = (a_pos[2] - '0') * 10 + (a_pos[3] - '0');
+        int min_v = (a_pos[4] - '0') * 10 + (a_pos[5] - '0');
+        int val = maj * 100 + min_v;
+        if (val <= 100) {
+            snprintf(tag, tag_sz, "1. Gioco Base (v1.00)");
+            rank = 1;
+        } else {
+            snprintf(tag, tag_sz, "2. Aggiornamento (v%d.%02d)", maj, min_v);
+            rank = 2;
+        }
+    }
+
+    /* 2. Scene version pattern: v1.00 vs v1.01 / v1.20 */
+    if (tag[0] == '\0') {
+        const char *v_pos = strstr(lower, "v");
+        while (v_pos) {
+            if ((v_pos == lower || !g_ascii_isalnum(*(v_pos - 1))) &&
+                g_ascii_isdigit(v_pos[1])) {
+                int maj = 0, min_v = 0;
+                if (sscanf(v_pos, "v%d.%d", &maj, &min_v) >= 1) {
+                    gboolean is_backport = (strstr(lower, "backport") != NULL);
+                    if (maj == 1 && min_v == 0) {
+                        snprintf(tag, tag_sz, "1. Gioco Base (v1.00)");
+                        rank = 1;
+                    } else {
+                        snprintf(tag, tag_sz, "2. Aggiornamento (v%d.%02d%s)",
+                                 maj, min_v, is_backport ? " + Backport" : "");
+                        rank = 2;
+                    }
+                    break;
+                }
+            }
+            v_pos = strstr(v_pos + 1, "v");
+        }
+    }
+
+    /* 3. Keywords fallback */
+    if (tag[0] == '\0') {
+        if (strstr(lower, "patch") || strstr(lower, "update") || strstr(lower, "backport")) {
+            snprintf(tag, tag_sz, "2. Aggiornamento");
+            rank = 2;
+        } else if (strstr(lower, "dlc")) {
+            snprintf(tag, tag_sz, "3. DLC %d", idx + 1);
+            rank = 3;
+        } else if (strstr(lower, "base") || strstr(lower, "game")) {
+            snprintf(tag, tag_sz, "1. Gioco Base");
+            rank = 1;
+        } else {
+            snprintf(tag, tag_sz, "Parte %d", idx + 1);
+            rank = 4;
+        }
+    }
+
+    if (out_rank) *out_rank = rank;
+}
+
+static void format_extracted_pkg_name(const char *title, const char *raw_path,
+                                      int idx, int total_pkgs,
+                                      char *out, size_t out_sz) {
+    if (total_pkgs <= 1) {
+        g_strlcpy(out, title, out_sz);
+        return;
+    }
+
+    const char *slash = strrchr(raw_path, '/');
+    const char *fn = slash ? slash + 1 : raw_path;
+
+    char clean_title[160];
+    g_strlcpy(clean_title, title, sizeof(clean_title));
+    char *dot = strrchr(clean_title, '.');
+    if (dot && strcasecmp(dot, ".pkg") == 0) *dot = '\0';
+    g_strstrip(clean_title);
+
+    char tag[64];
+    get_pkg_friendly_tag(fn, idx, tag, sizeof(tag), NULL);
+
+    snprintf(out, out_sz, "%.160s - %.64s.pkg", clean_title, tag);
+}
+
 static int compare_pkg_paths(const void *a, const void *b) {
     const char *pa = (const char *)a;
     const char *pb = (const char *)b;
     const char *fa = strrchr(pa, '/'); fa = fa ? fa + 1 : pa;
     const char *fb = strrchr(pb, '/'); fb = fb ? fb + 1 : pb;
+
+    char tag_a[128], tag_b[128];
+    int rank_a = 4, rank_b = 4;
+    get_pkg_friendly_tag(fa, 0, tag_a, sizeof(tag_a), &rank_a);
+    get_pkg_friendly_tag(fb, 0, tag_b, sizeof(tag_b), &rank_b);
+
+    if (rank_a != rank_b) {
+        return rank_a - rank_b;
+    }
     return strcasecmp(fa, fb);
 }
 
@@ -2626,9 +2727,9 @@ static void *split_archive_thread_fn_internal(void *arg) {
     if (sa->pkg_name[0]) {
         gboolean matches_pkg = FALSE;
         for (int p_idx = 0; p_idx < n_pkgs; p_idx++) {
-            const char *slash = strrchr(pkg_paths[p_idx], '/');
-            const char *fn = slash ? slash + 1 : pkg_paths[p_idx];
-            if (strcasecmp(fn, sa->pkg_name) == 0) { matches_pkg = TRUE; break; }
+            char target_dest[256];
+            format_extracted_pkg_name(sa->pkg_name, pkg_paths[p_idx], p_idx, n_pkgs, target_dest, sizeof(target_dest));
+            if (strcasecmp(target_dest, sa->pkg_name) == 0) { matches_pkg = TRUE; break; }
         }
         if (!matches_pkg) {
             ftp_delete_file(g_ftp_host, g_ftp_port, g_ftp_user, g_ftp_pass, g_ftp_dir, sa->pkg_name);
@@ -2646,6 +2747,10 @@ static void *split_archive_thread_fn_internal(void *arg) {
             break;
         }
 
+        char dest_file[256];
+        format_extracted_pkg_name(sa->pkg_name, pkg_path, p_idx, n_pkgs, dest_file, sizeof(dest_file));
+        g_strlcpy(dl->dest_name, dest_file, sizeof(dl->dest_name));
+
         fseeko(pkg_fp, 0, SEEK_END);
         off_t pkg_size = ftello(pkg_fp);
         fseeko(pkg_fp, 0, SEEK_SET);
@@ -2657,14 +2762,6 @@ static void *split_archive_thread_fn_internal(void *arg) {
         dl->last_sample_time = dl->start_time;
         dl->last_sample_bytes = 0;
         post_update(dl);
-
-        char dest_file[256];
-        if (n_pkgs == 1) {
-            g_strlcpy(dest_file, sa->pkg_name, sizeof(dest_file));
-        } else {
-            const char *slash = strrchr(pkg_path, '/');
-            g_strlcpy(dest_file, slash ? slash + 1 : pkg_path, sizeof(dest_file));
-        }
 
         char ftp_url[2048];
         build_ftp_url(ftp_url, sizeof(ftp_url), g_ftp_host, g_ftp_port, g_ftp_dir, dest_file);
@@ -2709,6 +2806,14 @@ static void *split_archive_thread_fn_internal(void *arg) {
         dl->status     = DL_DONE;
         dl->progress   = 100.0;
         dl->downloaded = dl->total_size;
+        if (n_pkgs > 1) {
+            char clean_title[256];
+            g_strlcpy(clean_title, sa->pkg_name, sizeof(clean_title));
+            char *dot = strrchr(clean_title, '.');
+            if (dot && strcasecmp(dot, ".pkg") == 0) *dot = '\0';
+            g_strstrip(clean_title);
+            snprintf(dl->dest_name, sizeof(dl->dest_name), "%s (%d PKG pronti)", clean_title, n_pkgs);
+        }
     } else {
         dl->status = DL_ERROR;
         if (dl->error_msg[0] == '\0')

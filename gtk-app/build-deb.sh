@@ -4,13 +4,13 @@
 #                 PS FTP Downloader (GTK4)
 #
 #  Usage: ./build-deb.sh
-#  Output: ../ps-ftp-downloader_1.3.7_amd64.deb
+#  Output: ../ps-ftp-downloader_1.3.8_amd64.deb
 # ─────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
 PKG_NAME="ps-ftp-downloader"
-PKG_VERSION="1.3.7"
+PKG_VERSION="1.3.8"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
 PKG_DESCRIPTION="Download PKG directly from network to PS via FTP — with split-archive, DLPSGame catalog & Undetected ChromeDriver"
