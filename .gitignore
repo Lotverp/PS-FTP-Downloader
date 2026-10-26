@@ -18,3 +18,10 @@ __pycache__/
 
 # Notes
 update.txt
+
+# PS4 Homebrew App
+ps4-app/build/
+ps4-app/deps/
+ps4-app/ps4-downloader-sim
+ps4-app/*.pkg
+ps4-app/app.gp4
