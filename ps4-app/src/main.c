@@ -7,6 +7,7 @@
 #include "downloader.h"
 #include "ui.h"
 #include "net_client.h"
+#include "debug_log.h"
 
 int main(int argc, char *argv[]) {
     (void)argc;
@@ -16,38 +17,20 @@ int main(int argc, char *argv[]) {
     setvbuf(stdout, NULL, _IONBF, 0);
     setvbuf(stderr, NULL, _IONBF, 0);
 
-    printf("[PS4-App] Avvio PS4 Direct Downloader...\n");
+    /* Initialize Live Telemetry (sends UDP to PC and prints to GoldHEN Klog port 9998) */
+    dbg_init("192.168.1.24", 9999);
+    dbg_log("[PS4-App] Avvio PS4 Direct Downloader (PID boot)...\n");
 
-    /* Initialize Networking (non-fatal if network takes time to connect) */
-    if (!net_init()) {
-        printf("[PS4-App] Inizializzazione rete in corso...\n");
-    }
-
-    config_init();
-    downloader_init();
-
-    /* Initialize SDL2 subsystems */
+    /* 1. INITIALIZE SDL VIDEO FIRST TO DISMISS PS4 SPLASH SCREEN */
 #ifdef __ORBIS__
+    dbg_log("[PS4-App] Inizializzazione SDL_Init(VIDEO | JOYSTICK)...\n");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_JOYSTICK) < 0) {
-        printf("[PS4-App] SDL_Init fallback a VIDEO: %s\n", SDL_GetError());
+        dbg_log("[PS4-App] SDL_Init fallback solo VIDEO: %s\n", SDL_GetError());
         SDL_Init(SDL_INIT_VIDEO);
-    }
-    SDL_Joystick *joystick = NULL;
-    if (SDL_NumJoysticks() > 0) {
-        joystick = SDL_JoystickOpen(0);
-        if (joystick) {
-            printf("[PS4-App] Controller Joystick PS4 aperto con successo.\n");
-        }
     }
 #else
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK | SDL_INIT_EVENTS) < 0) {
         fprintf(stderr, "[PS4-App] SDL_Init fallita: %s\n", SDL_GetError());
-    }
-    int num_joysticks = SDL_NumJoysticks();
-    for (int i = 0; i < num_joysticks; i++) {
-        if (SDL_IsGameController(i)) {
-            SDL_GameControllerOpen(i);
-        }
     }
 #endif
 
@@ -55,7 +38,7 @@ int main(int argc, char *argv[]) {
     SDL_Renderer *renderer = NULL;
 
 #ifdef __ORBIS__
-    /* On PS4: create full HD 1080p window and software renderer on the window surface */
+    dbg_log("[PS4-App] Creazione finestra 1920x1080...\n");
     window = SDL_CreateWindow(
         "PS4 Direct Downloader",
         SDL_WINDOWPOS_UNDEFINED,
@@ -66,13 +49,15 @@ int main(int argc, char *argv[]) {
     );
 
     if (window) {
+        dbg_log("[PS4-App] Ottenimento superficie finestra...\n");
         SDL_Surface *surface = SDL_GetWindowSurface(window);
         if (surface) {
             renderer = SDL_CreateSoftwareRenderer(surface);
+            dbg_log("[PS4-App] Software renderer creato con successo!\n");
         }
     }
 #else
-    /* On Desktop Simulator */
+    /* Desktop Simulator */
     window = SDL_CreateWindow(
         "PS4 Direct Downloader (Simulation & Native)",
         SDL_WINDOWPOS_CENTERED,
@@ -92,20 +77,49 @@ int main(int argc, char *argv[]) {
 #endif
 
     if (!renderer) {
-        printf("[PS4-App] Errore creazione renderer! Uscita controllata...\n");
-        for (int i = 0; i < 30; i++) {
-            SDL_Delay(100);
-        }
+        dbg_log("[PS4-App] ERRORE: Creazione renderer fallita: %s\n", SDL_GetError());
         if (window) SDL_DestroyWindow(window);
         SDL_Quit();
-        net_cleanup();
         return 0;
     }
 
+    /* 2. IMMEDIATELY DRAW AND FLIP FRAME 0 TO DISMISS PS4 BOOT LOGO */
+    SDL_SetRenderDrawColor(renderer, 10, 14, 26, 255);
+    SDL_RenderClear(renderer);
+#ifdef __ORBIS__
+    if (window) {
+        SDL_UpdateWindowSurface(window);
+        dbg_log("[PS4-App] Frame 0 inviato a schermo! Logo PS4 superato.\n");
+    }
+#endif
+
+    /* 3. CONTROLLERS SETUP */
+#ifdef __ORBIS__
+    SDL_Joystick *joystick = NULL;
+    if (SDL_NumJoysticks() > 0) {
+        joystick = SDL_JoystickOpen(0);
+        if (joystick) {
+            dbg_log("[PS4-App] DualShock 4 collegato (Joystick 0).\n");
+        }
+    }
+#else
+    int num_joysticks = SDL_NumJoysticks();
+    for (int i = 0; i < num_joysticks; i++) {
+        if (SDL_IsGameController(i)) {
+            SDL_GameControllerOpen(i);
+        }
+    }
+#endif
+
+    /* 4. SUBSYSTEMS & APP LOGIC INITIALIZATION */
+    dbg_log("[PS4-App] Inizializzazione configurazione e moduli...\n");
+    config_init();
+    downloader_init();
+    net_init();
+
     /* Initialize UI */
     ui_init(renderer);
-
-    printf("[PS4-App] Loop principale avviato (60 FPS)...\n");
+    dbg_log("[PS4-App] Loop principale avviato (60 FPS)...\n");
 
     bool running = true;
     SDL_Event event;
