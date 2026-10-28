@@ -56,7 +56,7 @@
       "category": "Emulators",
       "region": "Tutte",
       "description": "Frontend universale multi-sistema per emulazione retro-gaming e homebrew.",
-      "icon": "https://raw.githubusercontent.com/libretro/RetroArch/master/media/retroarch.png",
+      "icon": "https://raw.githubusercontent.com/libretro/RetroArch/master/media/retroarch-96x96.png",
       "url": "https://buildbot.libretro.com/stable/1.19.1/playstation/ps4/RetroArch.pkg",
       "pkg_name": "RetroArch.pkg",
       "size": 250000000
@@ -68,7 +68,7 @@
       "category": "Utility",
       "region": "Tutte",
       "description": "File manager, server FTP e installatore di pacchetti VPK per PS Vita.",
-      "icon": "https://raw.githubusercontent.com/TheOfficialFloW/VitaShell/master/sce_sys/icon0.png",
+      "icon": "https://raw.githubusercontent.com/TheOfficialFloW/VitaShell/master/release/icon0.png",
       "url": "https://github.com/TheOfficialFloW/VitaShell/releases/download/2.00/VitaShell.vpk",
       "pkg_name": "VitaShell.vpk",
       "size": 4194304
@@ -80,7 +80,7 @@
       "category": "Utility",
       "region": "Tutte",
       "description": "Server FTP ad alte prestazioni per Nintendo Switch per trasferimenti wireless.",
-      "icon": "https://raw.githubusercontent.com/mtheall/ftpd/master/icon.png",
+      "icon": "https://raw.githubusercontent.com/mtheall/ftpd/master/meta/icon.png",
       "url": "https://github.com/mtheall/ftpd/releases/download/v3.1.0/ftpd.nro",
       "pkg_name": "ftpd.nro",
       "size": 1200000

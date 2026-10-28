@@ -4312,16 +4312,28 @@ static void trigger_catalog_fetch_async(void) {
 }
 
 /* Icon async loader */
+typedef struct IconTargetNode {
+    GtkWidget *widget;
+    int target_w;
+    int target_h;
+    struct IconTargetNode *next;
+} IconTargetNode;
+
 typedef struct {
     char icon_url[1024];
     char cache_path[512];
-    GtkWidget *image;
-    int target_w;
-    int target_h;
+    IconTargetNode *targets;
 } IconLoadTask;
 
+static gboolean is_valid_cached_file(const char *path) {
+    if (!path || !path[0]) return FALSE;
+    struct stat st;
+    if (stat(path, &st) == 0 && st.st_size > 0) return TRUE;
+    return FALSE;
+}
+
 static void set_image_from_file_scaled(GtkWidget *widget, const char *path, int target_w, int target_h) {
-    if (!widget || !path || !path[0] || !GTK_IS_WIDGET(widget) || !gtk_widget_get_root(widget)) return;
+    if (!widget || !path || !path[0] || !GTK_IS_WIDGET(widget)) return;
     GError *err = NULL;
     gboolean is_pic = GTK_IS_PICTURE(widget);
     GdkPixbuf *pb = gdk_pixbuf_new_from_file_at_scale(path,
@@ -4357,16 +4369,21 @@ static gboolean on_icon_loaded_idle(gpointer user_data) {
         if (g_icon_inflight) {
             g_hash_table_remove(g_icon_inflight, task->icon_url);
         }
-        if (task->image) {
-            GtkWidget *w = task->image;
-            g_object_remove_weak_pointer(G_OBJECT(w), (gpointer *)&task->image);
-            if (GTK_IS_WIDGET(w) && gtk_widget_get_root(w) != NULL) {
-                const char *cur = g_object_get_data(G_OBJECT(w), "current_icon_url");
-                if (cur && strcmp(cur, task->icon_url) == 0 &&
-                    g_file_test(task->cache_path, G_FILE_TEST_EXISTS)) {
-                    set_image_from_file_scaled(w, task->cache_path, task->target_w, task->target_h);
+        gboolean cached = is_valid_cached_file(task->cache_path);
+        for (IconTargetNode *n = task->targets; n != NULL; ) {
+            IconTargetNode *next = n->next;
+            if (n->widget) {
+                GtkWidget *w = n->widget;
+                g_object_remove_weak_pointer(G_OBJECT(w), (gpointer *)&n->widget);
+                if (cached && GTK_IS_WIDGET(w)) {
+                    const char *cur = g_object_get_data(G_OBJECT(w), "current_icon_url");
+                    if (cur && strcmp(cur, task->icon_url) == 0) {
+                        set_image_from_file_scaled(w, task->cache_path, n->target_w, n->target_h);
+                    }
                 }
             }
+            g_free(n);
+            n = next;
         }
         free(task);
     }
@@ -4375,26 +4392,31 @@ static gboolean on_icon_loaded_idle(gpointer user_data) {
 
 static void *icon_loader_thread(void *arg) {
     IconLoadTask *task = (IconLoadTask *)arg;
-    if (!g_file_test(task->cache_path, G_FILE_TEST_EXISTS)) {
+    if (!is_valid_cached_file(task->cache_path)) {
         CURL *c = curl_easy_init();
         if (c) {
+            char tmp_path[600];
+            snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%lu", task->cache_path, (unsigned long)pthread_self());
             curl_common_opts(c, task->icon_url);
             CURL_SET(c, CURLOPT_NOSIGNAL, 1L);
             CURL_SET(c, CURLOPT_URL, task->icon_url);
             CURL_SET(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-            CURL_SET(c, CURLOPT_TIMEOUT, 10L);
-            CURL_SET(c, CURLOPT_CONNECTTIMEOUT, 5L);
+            CURL_SET(c, CURLOPT_TIMEOUT, 12L);
+            CURL_SET(c, CURLOPT_CONNECTTIMEOUT, 6L);
             CURL_SET(c, CURLOPT_FOLLOWLOCATION, 1L);
             CURL_SET(c, CURLOPT_FAILONERROR, 1L);
-            FILE *fp = fopen(task->cache_path, "wb");
+            FILE *fp = fopen(tmp_path, "wb");
             if (fp) {
                 CURL_SET(c, CURLOPT_WRITEDATA, fp);
                 CURLcode res = curl_easy_perform(c);
                 fclose(fp);
                 long http_code = 0;
                 curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
-                if (res != CURLE_OK || http_code != 200) {
-                    unlink(task->cache_path);
+                struct stat st;
+                if (res == CURLE_OK && http_code == 200 && stat(tmp_path, &st) == 0 && st.st_size > 0) {
+                    rename(tmp_path, task->cache_path);
+                } else {
+                    unlink(tmp_path);
                 }
             }
             curl_easy_cleanup(c);
@@ -4418,7 +4440,7 @@ static void load_icon_async(const char *url, GtkWidget *img, int target_w, int t
     char *path = g_build_filename(dir, fname, NULL);
     g_free(dir);
 
-    if (g_file_test(path, G_FILE_TEST_EXISTS)) {
+    if (is_valid_cached_file(path)) {
         set_image_from_file_scaled(img, path, target_w, target_h);
         g_free(path);
         return;
@@ -4427,14 +4449,25 @@ static void load_icon_async(const char *url, GtkWidget *img, int target_w, int t
     if (!g_icon_inflight) {
         g_icon_inflight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     }
-    if (g_hash_table_contains(g_icon_inflight, url)) {
+
+    IconTargetNode *node = g_new0(IconTargetNode, 1);
+    node->widget = img;
+    node->target_w = target_w;
+    node->target_h = target_h;
+    g_object_add_weak_pointer(G_OBJECT(img), (gpointer *)&node->widget);
+
+    IconLoadTask *existing = (IconLoadTask *)g_hash_table_lookup(g_icon_inflight, url);
+    if (existing) {
+        node->next = existing->targets;
+        existing->targets = node;
         g_free(path);
         return;
     }
-    g_hash_table_add(g_icon_inflight, g_strdup(url));
 
     IconLoadTask *task = malloc(sizeof(IconLoadTask));
     if (!task) {
+        g_object_remove_weak_pointer(G_OBJECT(img), (gpointer *)&node->widget);
+        g_free(node);
         g_free(path);
         return;
     }
@@ -4443,19 +4476,18 @@ static void load_icon_async(const char *url, GtkWidget *img, int target_w, int t
     strncpy(task->cache_path, path, sizeof(task->cache_path) - 1);
     task->cache_path[sizeof(task->cache_path) - 1] = '\0';
     g_free(path);
-    task->image = img;
-    task->target_w = target_w;
-    task->target_h = target_h;
+    task->targets = node;
 
-    g_object_add_weak_pointer(G_OBJECT(img), (gpointer *)&task->image);
+    g_hash_table_insert(g_icon_inflight, g_strdup(url), task);
 
     pthread_t th;
     if (pthread_create(&th, NULL, icon_loader_thread, task) == 0) {
         pthread_detach(th);
     } else {
-        if (task->image) {
-            g_object_remove_weak_pointer(G_OBJECT(task->image), (gpointer *)&task->image);
+        if (node->widget) {
+            g_object_remove_weak_pointer(G_OBJECT(node->widget), (gpointer *)&node->widget);
         }
+        g_free(node);
         g_hash_table_remove(g_icon_inflight, task->icon_url);
         free(task);
     }
