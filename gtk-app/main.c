@@ -3760,7 +3760,7 @@ static void show_arch_dialog(GtkWindow *parent) {
         gtk_box_append(GTK_BOX(g_arch_urls_box), make_url_row(i));
 
     /* ── “+” button to add another slot ── */
-    GtkWidget *btn_add_slot = gtk_button_new_with_label("+  Add URL");
+    GtkWidget *btn_add_slot = gtk_button_new_with_label("Aggiungi URL");
     gtk_widget_add_css_class(btn_add_slot, "btn-add-slot");
     gtk_widget_set_halign(btn_add_slot, GTK_ALIGN_START);
     g_signal_connect(btn_add_slot, "clicked",
@@ -7800,7 +7800,7 @@ static GtkWidget *build_dlpsgame_page(void) {
     GtkWidget *toolbar_bottom = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_add_css_class(toolbar_bottom, "dlps-statusbar");
 
-    g_dlps_btn_prev = gtk_button_new_with_label("◀ Precedente");
+    g_dlps_btn_prev = gtk_button_new_with_label("Precedente");
     gtk_widget_add_css_class(g_dlps_btn_prev, "btn-page");
     gtk_widget_set_focusable(g_dlps_btn_prev, FALSE);
     gtk_widget_set_sensitive(g_dlps_btn_prev, FALSE);
@@ -7814,7 +7814,7 @@ static GtkWidget *build_dlpsgame_page(void) {
     gtk_widget_set_hexpand(g_dlps_lbl_page, TRUE);
     gtk_label_set_xalign(GTK_LABEL(g_dlps_lbl_page), 0.5);
 
-    g_dlps_btn_next = gtk_button_new_with_label("Successivo ▶");
+    g_dlps_btn_next = gtk_button_new_with_label("Successivo");
     gtk_widget_add_css_class(g_dlps_btn_next, "btn-page");
     gtk_widget_set_focusable(g_dlps_btn_next, FALSE);
     gtk_widget_set_sensitive(g_dlps_btn_next, FALSE);
@@ -7954,20 +7954,20 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_add_css_class(nav_box, "nav-switcher");
     gtk_widget_set_valign(nav_box, GTK_ALIGN_CENTER);
 
-    g_nav_downloads = gtk_button_new_with_label("📥 Trasferimenti");
+    g_nav_downloads = gtk_button_new_with_label("Trasferimenti");
     gtk_widget_add_css_class(g_nav_downloads, "nav-tab");
     gtk_widget_add_css_class(g_nav_downloads, "nav-active");
     gtk_widget_set_focusable(g_nav_downloads, FALSE);
     gtk_widget_set_tooltip_text(g_nav_downloads, "Visualizza la lista dei trasferimenti attivi e completati");
     g_signal_connect(g_nav_downloads, "clicked", G_CALLBACK(on_back_to_downloads_clicked), NULL);
 
-    g_nav_games = gtk_button_new_with_label("🎮 Giochi");
+    g_nav_games = gtk_button_new_with_label("Giochi");
     gtk_widget_add_css_class(g_nav_games, "nav-tab");
     gtk_widget_set_focusable(g_nav_games, FALSE);
     gtk_widget_set_tooltip_text(g_nav_games, "Sfoglia il catalogo giochi con ricerca e filtri");
     g_signal_connect(g_nav_games, "clicked", G_CALLBACK(on_dlps_clicked), NULL);
 
-    g_nav_tools = gtk_button_new_with_label("🧰 Tools & Homebrew");
+    g_nav_tools = gtk_button_new_with_label("Strumenti & Homebrew");
     gtk_widget_add_css_class(g_nav_tools, "nav-tab");
     gtk_widget_set_focusable(g_nav_tools, FALSE);
     gtk_widget_set_tooltip_text(g_nav_tools, "Esplora e installa con 1 clic homebrew ed emulatori per console");
@@ -7987,14 +7987,14 @@ static void activate(GtkApplication *app, gpointer user_data) {
     GtkWidget *actions_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     gtk_widget_set_valign(actions_box, GTK_ALIGN_CENTER);
 
-    GtkWidget *btn_arch = gtk_button_new_with_label("📦 Archivio Diviso");
+    GtkWidget *btn_arch = gtk_button_new_with_label("Archivio Diviso");
     gtk_widget_add_css_class(btn_arch, "btn-secondary-action");
     gtk_widget_set_focusable(btn_arch, FALSE);
     gtk_widget_set_tooltip_text(btn_arch,
         "Scarica un archivio suddiviso (.part1.rar, .part2.rar...), estrae e invia automaticamente via FTP");
     g_signal_connect(btn_arch, "clicked", G_CALLBACK(on_arch_clicked), g_window);
 
-    GtkWidget *btn_add = gtk_button_new_with_label("+ Nuovo Download");
+    GtkWidget *btn_add = gtk_button_new_with_label("Nuovo Download");
     gtk_widget_add_css_class(btn_add, "btn-primary-add");
     gtk_widget_set_focusable(btn_add, FALSE);
     gtk_widget_set_tooltip_text(btn_add,
@@ -8004,13 +8004,13 @@ static void activate(GtkApplication *app, gpointer user_data) {
     GtkWidget *sep_actions = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
     gtk_widget_add_css_class(sep_actions, "header-sep");
 
-    GtkWidget *btn_sources = gtk_button_new_with_label("🌐 Sorgenti");
+    GtkWidget *btn_sources = gtk_button_new_with_label("Sorgenti");
     gtk_widget_add_css_class(btn_sources, "btn-utility");
     gtk_widget_set_focusable(btn_sources, FALSE);
     gtk_widget_set_tooltip_text(btn_sources, "Gestisci i feed e le sorgenti JSON del catalogo");
     g_signal_connect(btn_sources, "clicked", G_CALLBACK(on_sources_clicked), g_window);
 
-    GtkWidget *btn_settings = gtk_button_new_with_label("⚙️ Impostazioni");
+    GtkWidget *btn_settings = gtk_button_new_with_label("Impostazioni");
     gtk_widget_add_css_class(btn_settings, "btn-utility");
     gtk_widget_set_focusable(btn_settings, FALSE);
     gtk_widget_set_tooltip_text(btn_settings, "Configura l'IP della console, porte FTP, Debrid e Risolutore");

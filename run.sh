@@ -14,10 +14,10 @@ GTK_DIR="${SCRIPT_DIR}/gtk-app"
 
 # Se il binario non esiste o i sorgenti sono stati modificati, compila al volo
 if [ ! -f "${GTK_DIR}/p2c-downloader" ] || [ "${GTK_DIR}/main.c" -nt "${GTK_DIR}/p2c-downloader" ]; then
-    echo "⚙️  Compilazione in corso..."
+    echo "[P2C] Compilazione in corso..."
     make -C "${GTK_DIR}"
 fi
 
-echo "🚀 Avvio P2C Downloader..."
+echo "[P2C] Avvio P2C Downloader..."
 cd "${GTK_DIR}"
 exec ./p2c-downloader "$@"
