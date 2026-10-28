@@ -251,6 +251,7 @@ static void show_toast(const char *msg);
 static void show_prep_progress(const char *msg);
 static void hide_prep_progress(void);
 static void trigger_catalog_fetch_async(void);
+static void on_catalog_cat_selected(GtkDropDown *dropdown, GParamSpec *pspec, gpointer user_data);
 typedef struct AutoSession AutoSession;
 static gboolean is_uc_resolver_available(void);
 static void trigger_uc_resolve(const char *url, const char *game_title, const char *password, GtkWidget *dialog, AutoSession *sess);
@@ -4159,15 +4160,16 @@ static gboolean on_catalog_fetch_done(gpointer user_data) {
         return G_SOURCE_REMOVE;
     }
 
-    g_list_store_remove_all(g_catalog_store);
-
     GHashTable *cat_table = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     g_hash_table_add(cat_table, g_strdup("Tutte"));
 
+    CatalogObject **objs = NULL;
+    if (res->count > 0) {
+        objs = malloc(sizeof(CatalogObject *) * res->count);
+    }
+
     for (int i = 0; i < res->count; i++) {
-        CatalogObject *obj = catalog_object_new(&res->items[i]);
-        g_list_store_append(g_catalog_store, obj);
-        g_object_unref(obj);
+        objs[i] = catalog_object_new(&res->items[i]);
 
         if (res->items[i].category[0]) {
             if (!g_hash_table_contains(cat_table, res->items[i].category)) {
@@ -4175,6 +4177,14 @@ static gboolean on_catalog_fetch_done(gpointer user_data) {
             }
         }
     }
+
+    guint old_n = g_list_model_get_n_items(G_LIST_MODEL(g_catalog_store));
+    g_list_store_splice(g_catalog_store, 0, old_n, (gpointer *)objs, res->count);
+
+    for (int i = 0; i < res->count; i++) {
+        g_object_unref(objs[i]);
+    }
+    if (objs) free(objs);
 
     if (g_catalog_cat_dropdown) {
         GtkStringList *sl = gtk_string_list_new(NULL);
@@ -4189,7 +4199,10 @@ static gboolean on_catalog_fetch_done(gpointer user_data) {
                 gtk_string_list_append(sl, c);
             }
         }
+        g_signal_handlers_block_by_func(g_catalog_cat_dropdown, on_catalog_cat_selected, NULL);
         gtk_drop_down_set_model(GTK_DROP_DOWN(g_catalog_cat_dropdown), G_LIST_MODEL(sl));
+        gtk_drop_down_set_selected(GTK_DROP_DOWN(g_catalog_cat_dropdown), 0);
+        g_signal_handlers_unblock_by_func(g_catalog_cat_dropdown, on_catalog_cat_selected, NULL);
         g_object_unref(sl);
     }
     g_hash_table_destroy(cat_table);
@@ -4309,7 +4322,7 @@ typedef struct {
 } IconLoadTask;
 
 static void set_image_from_file_scaled(GtkWidget *widget, const char *path, int target_w, int target_h) {
-    if (!widget || !path || !path[0]) return;
+    if (!widget || !path || !path[0] || !GTK_IS_WIDGET(widget) || !gtk_widget_get_root(widget)) return;
     GError *err = NULL;
     gboolean is_pic = GTK_IS_PICTURE(widget);
     GdkPixbuf *pb = gdk_pixbuf_new_from_file_at_scale(path,
@@ -4337,14 +4350,27 @@ G_GNUC_END_IGNORE_DEPRECATIONS
     }
 }
 
+static GHashTable *g_icon_inflight = NULL;
+
 static gboolean on_icon_loaded_idle(gpointer user_data) {
     IconLoadTask *task = (IconLoadTask *)user_data;
-    if (task->image && (GTK_IS_IMAGE(task->image) || GTK_IS_PICTURE(task->image)) &&
-        g_file_test(task->cache_path, G_FILE_TEST_EXISTS)) {
-        set_image_from_file_scaled(task->image, task->cache_path, task->target_w, task->target_h);
+    if (task) {
+        if (g_icon_inflight) {
+            g_hash_table_remove(g_icon_inflight, task->icon_url);
+        }
+        if (task->image) {
+            GtkWidget *w = task->image;
+            g_object_remove_weak_pointer(G_OBJECT(w), (gpointer *)&task->image);
+            if (GTK_IS_WIDGET(w) && gtk_widget_get_root(w) != NULL) {
+                const char *cur = g_object_get_data(G_OBJECT(w), "current_icon_url");
+                if (cur && strcmp(cur, task->icon_url) == 0 &&
+                    g_file_test(task->cache_path, G_FILE_TEST_EXISTS)) {
+                    set_image_from_file_scaled(w, task->cache_path, task->target_w, task->target_h);
+                }
+            }
+        }
+        free(task);
     }
-    if (task->image) g_object_unref(task->image);
-    free(task);
     return G_SOURCE_REMOVE;
 }
 
@@ -4380,7 +4406,10 @@ static void *icon_loader_thread(void *arg) {
 }
 
 static void load_icon_async(const char *url, GtkWidget *img, int target_w, int target_h) {
-    if (!url || !url[0] || !is_valid_feed_url(url)) return;
+    if (!url || !url[0] || !is_valid_feed_url(url) || !img || !GTK_IS_WIDGET(img)) return;
+
+    g_object_set_data_full(G_OBJECT(img), "current_icon_url", g_strdup(url), g_free);
+
     const char *cache_dir = g_get_user_cache_dir();
     char *dir = g_build_filename(cache_dir, "p2c-downloader", "icons", NULL);
     g_mkdir_with_parents(dir, 0755);
@@ -4396,21 +4425,39 @@ static void load_icon_async(const char *url, GtkWidget *img, int target_w, int t
         return;
     }
 
+    if (!g_icon_inflight) {
+        g_icon_inflight = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    }
+    if (g_hash_table_contains(g_icon_inflight, url)) {
+        g_free(path);
+        return;
+    }
+    g_hash_table_add(g_icon_inflight, g_strdup(url));
+
     IconLoadTask *task = malloc(sizeof(IconLoadTask));
+    if (!task) {
+        g_free(path);
+        return;
+    }
     strncpy(task->icon_url, url, sizeof(task->icon_url) - 1);
     task->icon_url[sizeof(task->icon_url) - 1] = '\0';
     strncpy(task->cache_path, path, sizeof(task->cache_path) - 1);
     task->cache_path[sizeof(task->cache_path) - 1] = '\0';
     g_free(path);
-    task->image = g_object_ref(img);
+    task->image = img;
     task->target_w = target_w;
     task->target_h = target_h;
+
+    g_object_add_weak_pointer(G_OBJECT(img), (gpointer *)&task->image);
 
     pthread_t th;
     if (pthread_create(&th, NULL, icon_loader_thread, task) == 0) {
         pthread_detach(th);
     } else {
-        g_object_unref(task->image);
+        if (task->image) {
+            g_object_remove_weak_pointer(G_OBJECT(task->image), (gpointer *)&task->image);
+        }
+        g_hash_table_remove(g_icon_inflight, task->icon_url);
         free(task);
     }
 }
@@ -4619,6 +4666,21 @@ static void on_catalog_item_bind(GtkSignalListItemFactory *self, GtkListItem *li
     g_signal_connect(btn, "clicked", G_CALLBACK(on_catalog_install_clicked), obj);
 }
 
+static void on_catalog_item_unbind(GtkSignalListItemFactory *self, GtkListItem *list_item, gpointer user_data) {
+    (void)self; (void)user_data;
+    GtkWidget *card = gtk_list_item_get_child(list_item);
+    if (!card) return;
+    GtkWidget *btn = g_object_get_data(G_OBJECT(card), "btn");
+    GtkWidget *img = g_object_get_data(G_OBJECT(card), "img");
+    if (btn) g_signal_handlers_disconnect_by_func(btn, G_CALLBACK(on_catalog_install_clicked), NULL);
+    if (img) {
+        g_object_set_data(G_OBJECT(img), "current_icon_url", NULL);
+        if (GTK_IS_IMAGE(img)) {
+            gtk_image_set_from_icon_name(GTK_IMAGE(img), "package-x-generic");
+        }
+    }
+}
+
 static int g_selected_catalog_region = 0; /* 0: Tutte, 1: Europa, 2: America */
 static GtkWidget *g_catalog_reg_dropdown = NULL;
 
@@ -4786,6 +4848,7 @@ static GtkWidget *build_catalog_page(void) {
     GtkSignalListItemFactory *factory = GTK_SIGNAL_LIST_ITEM_FACTORY(gtk_signal_list_item_factory_new());
     g_signal_connect(factory, "setup", G_CALLBACK(on_catalog_item_setup), NULL);
     g_signal_connect(factory, "bind", G_CALLBACK(on_catalog_item_bind), NULL);
+    g_signal_connect(factory, "unbind", G_CALLBACK(on_catalog_item_unbind), NULL);
 
     GtkWidget *list_view = gtk_list_view_new(GTK_SELECTION_MODEL(sel), GTK_LIST_ITEM_FACTORY(factory));
     gtk_widget_add_css_class(list_view, "catalog-list");
@@ -5859,12 +5922,21 @@ static gboolean on_dlps_fetch_done(gpointer user_data) {
     g_dlps_total_pages = res->total_pages > 0 ? res->total_pages : 1;
     g_dlps_total_items = (res->total_items > 0) ? res->total_items : res->count;
 
-    g_list_store_remove_all(g_dlps_store);
-    for (int i = 0; i < res->count; i++) {
-        DlpsGameObject *obj = dlps_game_object_new(&res->games[i]);
-        g_list_store_append(g_dlps_store, G_OBJECT(obj));
-        g_object_unref(obj);
+    DlpsGameObject **objs = NULL;
+    if (res->count > 0) {
+        objs = malloc(sizeof(DlpsGameObject *) * res->count);
     }
+    for (int i = 0; i < res->count; i++) {
+        objs[i] = dlps_game_object_new(&res->games[i]);
+    }
+
+    guint old_n = g_list_model_get_n_items(G_LIST_MODEL(g_dlps_store));
+    g_list_store_splice(g_dlps_store, 0, old_n, (gpointer *)objs, res->count);
+
+    for (int i = 0; i < res->count; i++) {
+        g_object_unref(objs[i]);
+    }
+    if (objs) free(objs);
 
     if (g_dlps_lbl_page) {
         char pbuf[512];
@@ -7849,8 +7921,15 @@ static void on_dlps_item_unbind(GtkSignalListItemFactory *self, GtkListItem *lis
     if (!card) return;
     GtkWidget *btn = g_object_get_data(G_OBJECT(card), "btn");
     GtkWidget *btn_auto = g_object_get_data(G_OBJECT(card), "btn_auto");
+    GtkWidget *img = g_object_get_data(G_OBJECT(card), "img");
     if (btn) g_signal_handlers_disconnect_by_func(btn, G_CALLBACK(on_dlps_card_details_clicked), NULL);
     if (btn_auto) g_signal_handlers_disconnect_by_func(btn_auto, G_CALLBACK(on_dlps_auto_clicked), NULL);
+    if (img) {
+        g_object_set_data(G_OBJECT(img), "current_icon_url", NULL);
+        if (GTK_IS_PICTURE(img)) {
+            gtk_picture_set_paintable(GTK_PICTURE(img), NULL);
+        }
+    }
 }
 
 static void on_dlps_console_changed(GObject *gobject, GParamSpec *pspec, gpointer user_data) {
@@ -8091,8 +8170,6 @@ static void activate(GtkApplication *app, gpointer user_data) {
     (void)user_data;
     load_css();
     load_settings();
-    trigger_ftp_ensure_dir_async();
-    trigger_catalog_fetch_async();
 
     g_window = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(g_window), "P2C Downloader");
@@ -8321,6 +8398,8 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_window_set_child(GTK_WINDOW(g_window), root);
     g_timeout_add_seconds(20, periodic_conn_check, NULL);
     gtk_window_present(GTK_WINDOW(g_window));
+    trigger_ftp_ensure_dir_async();
+    trigger_catalog_fetch_async();
 }
 
 /* ═══════════════════════════════════════════════════════════
