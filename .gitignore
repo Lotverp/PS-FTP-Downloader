@@ -17,5 +17,9 @@ gtk-app/ps-ftp-downloader
 __pycache__/
 *.pyc
 
+# Test binaries
+tests/test_c_core
+tests/__pycache__/
+
 # Notes
 update.txt

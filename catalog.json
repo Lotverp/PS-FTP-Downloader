@@ -51,25 +51,25 @@
     },
     {
       "id": "retroarch",
-      "name": "RetroArch Universal Frontend",
+      "name": "RetroArch Universal Frontend (PS Vita)",
       "version": "1.19.1",
       "category": "Emulators",
       "region": "Tutte",
       "description": "Frontend universale multi-sistema per emulazione retro-gaming e homebrew.",
       "icon": "https://raw.githubusercontent.com/libretro/RetroArch/master/media/retroarch-96x96.png",
-      "url": "https://buildbot.libretro.com/stable/1.19.1/playstation/ps4/RetroArch.pkg",
-      "pkg_name": "RetroArch.pkg",
-      "size": 250000000
+      "url": "https://buildbot.libretro.com/stable/1.19.1/playstation/vita/RetroArch.vpk",
+      "pkg_name": "RetroArch.vpk",
+      "size": 483875324
     },
     {
       "id": "vitashell",
       "name": "VitaShell File Manager (PS Vita)",
-      "version": "2.00",
+      "version": "2.02",
       "category": "Utility",
       "region": "Tutte",
       "description": "File manager, server FTP e installatore di pacchetti VPK per PS Vita.",
       "icon": "https://raw.githubusercontent.com/TheOfficialFloW/VitaShell/master/release/icon0.png",
-      "url": "https://github.com/TheOfficialFloW/VitaShell/releases/download/2.00/VitaShell.vpk",
+      "url": "https://github.com/TheOfficialFloW/VitaShell/releases/download/v2.02/VitaShell.vpk",
       "pkg_name": "VitaShell.vpk",
       "size": 4194304
     },

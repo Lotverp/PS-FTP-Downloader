@@ -261,8 +261,27 @@ static void trigger_realdebrid_resolve(const char *url, const char *game_title, 
 static void trigger_dlps_fetch(const char *query, int page);
 static void on_dlps_auto_clicked(GtkButton *btn, gpointer user_data);
 static gboolean url_looks_direct_file(const char *url);
+static void extract_url_ext(const char *url, char *ext, size_t ext_size);
+static gboolean is_known_ext(const char *ext);
+static gboolean is_archive_filename(const char *filename);
+static gboolean is_console_game_ext(const char *ext);
+static void *split_archive_thread_fn_internal(void *arg);
 static gboolean g_dlps_auto_download_on_fetch = FALSE;
 static char g_dlps_auto_download_pass[128] = "";
+static void clip_watch_arm(const char *title, const char *pass);
+
+static guchar *decode_base64_padded(const char *in, gsize *out_len) {
+    if (!in || !*in) return NULL;
+    size_t len = strlen(in);
+    size_t rem = len % 4;
+    size_t pad = rem ? (4 - rem) : 0;
+    char buf[4096];
+    if (len + pad >= sizeof(buf)) return NULL;
+    memcpy(buf, in, len);
+    for (size_t p = 0; p < pad; p++) buf[len + p] = '=';
+    buf[len + pad] = '\0';
+    return g_base64_decode(buf, out_len);
+}
 
 /* ═══════════════════════════════════════════════════════════
  * Utilità: formattazione leggibile di dimensioni, velocità ed ETA
@@ -645,9 +664,20 @@ typedef struct {
     int checked_206;
 } HttpWriteCtx;
 
-static size_t null_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
-    (void)ptr; (void)userdata;
-    return size * nmemb;
+typedef struct {
+    unsigned char buf[16];
+    size_t len;
+} ProbeMagicBuf;
+
+static size_t probe_read_magic_cb(char *ptr, size_t size, size_t nmemb, void *userdata) {
+    ProbeMagicBuf *pb = (ProbeMagicBuf *)userdata;
+    size_t total = size * nmemb;
+    if (pb && pb->len < sizeof(pb->buf)) {
+        size_t to_copy = MIN(total, sizeof(pb->buf) - pb->len);
+        memcpy(pb->buf + pb->len, ptr, to_copy);
+        pb->len += to_copy;
+    }
+    return total;
 }
 
 static size_t header_parse_range_cb(char *buffer, size_t size, size_t nitems, void *userdata) {
@@ -678,6 +708,28 @@ static size_t http_write_cb(char *ptr, size_t size, size_t nmemb, void *userdata
             post_update(ctx->dl);
             pipe->cancel = 1;
             return 0; /* abort transfer */
+        }
+    }
+
+    /* Safety guard: never stream compressed archives (.rar, .zip, .7z) directly to the console */
+    if (pipe->http_fetched == 0 && total >= 4) {
+        const unsigned char *u = (const unsigned char *)ptr;
+        gboolean is_arch = FALSE;
+        const char *arch_type = "";
+        if (u[0] == 0x52 && u[1] == 0x61 && u[2] == 0x72 && u[3] == 0x21) {
+            is_arch = TRUE; arch_type = "RAR";
+        } else if (u[0] == 0x37 && u[1] == 0x7a && u[2] == 0xbc && u[3] == 0xaf) {
+            is_arch = TRUE; arch_type = "7-Zip";
+        } else if (u[0] == 0x50 && u[1] == 0x4b && u[2] == 0x03 && u[3] == 0x04) {
+            is_arch = TRUE; arch_type = "ZIP";
+        }
+        if (is_arch) {
+            snprintf(ctx->dl->error_msg, sizeof(ctx->dl->error_msg),
+                     "Rilevato archivio compresso (%s). Invio grezzo alla console interrotto per sicurezza.", arch_type);
+            ctx->dl->status = DL_ERROR;
+            post_update(ctx->dl);
+            pipe->cancel = 1;
+            return 0;
         }
     }
 
@@ -771,9 +823,9 @@ static void curl_common_opts(CURL *c, const char *url) {
         GUri *ref_u = g_uri_parse(g_uc_last_referer, G_URI_FLAGS_PARSE_RELAXED, NULL);
         const char *ref_host = ref_u ? g_uri_get_host(ref_u) : NULL;
         if (ref_host && host && (g_ascii_strcasecmp(ref_host, host) == 0 ||
-            strstr(host, "fishoilenjoyer.xyz") || strstr(host, "akirabox") ||
-            strstr(host, "fileditch") || strstr(host, "vikingfile") ||
-            strstr(host, "vik1ngfile"))) {
+            strstr(host, "fishoilenjoyer.xyz") || strstr(host, "staysharpsleeps8hours.xyz") ||
+            strstr(host, "akirabox") || strstr(host, "fileditch") ||
+            strstr(host, "vikingfile") || strstr(host, "vik1ngfile"))) {
             CURL_SET(c, CURLOPT_REFERER, g_uc_last_referer);
         } else if (u && host) {
             char *ref = g_strdup_printf("%s://%s/", g_uri_get_scheme(u), host);
@@ -1396,6 +1448,42 @@ static void on_test_clicked(GtkButton *btn, gpointer user_data) {
     pthread_detach(th);
 }
 
+static void *reroute_download_to_split_archive(Download *dl, const char *url, const char *detected_ext) {
+    fprintf(stderr, "download_thread_fn: Detected archive '%s'! Rerouting dl #%d (%.60s) to split_archive...\n",
+            detected_ext ? detected_ext : "unknown", dl->id, url);
+    SplitArchiveArgs *sa = calloc(1, sizeof(SplitArchiveArgs));
+    sa->n_urls = 1;
+    g_strlcpy(sa->urls[0], url, sizeof(sa->urls[0]));
+    sa->dl_id = dl->id;
+
+    char dest_clean[SA_NAME_LEN];
+    snprintf(dest_clean, sizeof(dest_clean), "%s", dl->dest_name);
+    char *dot = strrchr(dest_clean, '.');
+    if (dot && (strcasecmp(dot, ".rar") == 0 || strcasecmp(dot, ".zip") == 0 ||
+                strcasecmp(dot, ".7z") == 0  || strcasecmp(dot, ".part") == 0 ||
+                strcasecmp(dot, ".001") == 0)) {
+        *dot = '\0';
+    }
+    g_strlcpy(sa->pkg_name, dest_clean, sizeof(sa->pkg_name));
+    g_strlcpy(dl->dest_name, dest_clean, sizeof(dl->dest_name));
+    if (detected_ext && detected_ext[0]) {
+        g_strlcpy(dl->ext, detected_ext, sizeof(dl->ext));
+    } else {
+        g_strlcpy(dl->ext, "rar", sizeof(dl->ext));
+    }
+    dl->sa_args = sa;
+
+    const char *base_cache_dir = g_tmp_dir[0] ? g_tmp_dir : g_get_user_cache_dir();
+    char safe[64] = "";
+    g_strlcpy(safe, dest_clean, sizeof(safe));
+    for (char *p = safe; *p; p++)
+        if (*p == '/' || *p == ' ' || *p == '\'' || *p == '"') *p = '_';
+    snprintf(sa->tmp_dir, sizeof(sa->tmp_dir),
+             "%.400s/p2c-arch/%ld-%.64s", base_cache_dir, (long)time(NULL), safe);
+
+    return split_archive_thread_fn_internal(sa);
+}
+
 static void *download_thread_fn_internal(void *arg) {
     Download *dl = (Download *)arg;
     dl->request_stop = STOP_NONE;
@@ -1416,6 +1504,25 @@ static void *download_thread_fn_internal(void *arg) {
         struct stat st;
         if (stat(lp, &st) == 0) {
             dl->total_size = st.st_size;
+            gboolean local_is_arch = is_archive_filename(lp);
+            if (!local_is_arch) {
+                FILE *fp = fopen(lp, "rb");
+                if (fp) {
+                    unsigned char magic[8] = {0};
+                    size_t nr = fread(magic, 1, 4, fp);
+                    fclose(fp);
+                    if (nr >= 4) {
+                        if ((magic[0] == 0x52 && magic[1] == 0x61 && magic[2] == 0x72 && magic[3] == 0x21) ||
+                            (magic[0] == 0x37 && magic[1] == 0x7a && magic[2] == 0xbc && magic[3] == 0xaf) ||
+                            (magic[0] == 0x50 && magic[1] == 0x4b && magic[2] == 0x03 && magic[3] == 0x04)) {
+                            local_is_arch = TRUE;
+                        }
+                    }
+                }
+            }
+            if (local_is_arch) {
+                return reroute_download_to_split_archive(dl, dl->url, "rar");
+            }
         } else {
             snprintf(dl->error_msg, sizeof(dl->error_msg), "File locale non trovato: %.200s", lp);
             dl->status = DL_ERROR;
@@ -1426,6 +1533,9 @@ static void *download_thread_fn_internal(void *arg) {
         /* ── Step 1: HTTP HEAD — get content length ── */
         dl->status = DL_PROBING;
         post_update(dl);
+
+        char probed_ext[32] = "";
+        char *eff_url = NULL;
 
         {
             CURL *head = curl_easy_init();
@@ -1443,29 +1553,77 @@ static void *download_thread_fn_internal(void *arg) {
             }
             curl_off_t cl = 0;
             curl_easy_getinfo(head, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &cl);
+
+            char *tmp_eff = NULL;
+            curl_easy_getinfo(head, CURLINFO_EFFECTIVE_URL, &tmp_eff);
+            if (tmp_eff && tmp_eff[0]) eff_url = g_strdup(tmp_eff);
+
+            char *ct = NULL;
+            curl_easy_getinfo(head, CURLINFO_CONTENT_TYPE, &ct);
+
+            if (eff_url && eff_url[0]) {
+                extract_url_ext(eff_url, probed_ext, sizeof(probed_ext));
+            }
+            if (!probed_ext[0] && ct) {
+                if (strstr(ct, "rar")) g_strlcpy(probed_ext, "rar", sizeof(probed_ext));
+                else if (strstr(ct, "zip")) g_strlcpy(probed_ext, "zip", sizeof(probed_ext));
+                else if (strstr(ct, "7z")) g_strlcpy(probed_ext, "7z", sizeof(probed_ext));
+            }
+
             curl_easy_cleanup(head);
             if (cl > 0) dl->total_size = cl;
+
+            if (probed_ext[0] && (strcasecmp(probed_ext, "rar") == 0 ||
+                                  strcasecmp(probed_ext, "zip") == 0 ||
+                                  strcasecmp(probed_ext, "7z") == 0)) {
+                void *ret = reroute_download_to_split_archive(dl, eff_url ? eff_url : dl->url, probed_ext);
+                if (eff_url) g_free(eff_url);
+                return ret;
+            }
         }
 
         if (dl->total_size <= 0) {
-            /* Fallback: GET with Range: bytes=0-0 to read Content-Range */
+            /* Fallback: GET with Range: bytes=0-1023 to read Content-Range and magic bytes */
+            ProbeMagicBuf pmb = { {0}, 0 };
             CURL *get = curl_easy_init();
             curl_common_opts(get, dl->url);
             CURL_SET(get, CURLOPT_NOSIGNAL,       1L);
             CURL_SET(get, CURLOPT_URL,            dl->url);
-            CURL_SET(get, CURLOPT_RANGE,          "0-0");
+            CURL_SET(get, CURLOPT_RANGE,          "0-1023");
             CURL_SET(get, CURLOPT_CONNECTTIMEOUT, 15L);
             CURL_SET(get, CURLOPT_FAILONERROR,    1L);
-            CURL_SET(get, CURLOPT_WRITEFUNCTION,  null_write_cb);
+            CURL_SET(get, CURLOPT_WRITEFUNCTION,  probe_read_magic_cb);
+            CURL_SET(get, CURLOPT_WRITEDATA,      &pmb);
             CURL_SET(get, CURLOPT_HEADERFUNCTION, header_parse_range_cb);
             curl_off_t parsed_size = 0;
             CURL_SET(get, CURLOPT_HEADERDATA,     &parsed_size);
             
-            if (curl_easy_perform(get) == CURLE_OK && parsed_size > 0) {
+            char *tmp_eff = NULL;
+            CURLcode gres = curl_easy_perform(get);
+            if (gres == CURLE_OK) {
+                curl_easy_getinfo(get, CURLINFO_EFFECTIVE_URL, &tmp_eff);
+                if (tmp_eff && tmp_eff[0] && !eff_url) eff_url = g_strdup(tmp_eff);
+            }
+            if (gres == CURLE_OK && parsed_size > 0) {
                 dl->total_size = parsed_size;
             }
             curl_easy_cleanup(get);
+
+            if (pmb.len >= 4) {
+                const unsigned char *u = pmb.buf;
+                const char *found_arch = NULL;
+                if (u[0] == 0x52 && u[1] == 0x61 && u[2] == 0x72 && u[3] == 0x21) found_arch = "rar";
+                else if (u[0] == 0x37 && u[1] == 0x7a && u[2] == 0xbc && u[3] == 0xaf) found_arch = "7z";
+                else if (u[0] == 0x50 && u[1] == 0x4b && u[2] == 0x03 && u[3] == 0x04) found_arch = "zip";
+
+                if (found_arch) {
+                    void *ret = reroute_download_to_split_archive(dl, eff_url ? eff_url : dl->url, found_arch);
+                    if (eff_url) g_free(eff_url);
+                    return ret;
+                }
+            }
         }
+        if (eff_url) g_free(eff_url);
     }
 
     /* ── Step 2: FTP SIZE probe — find resume offset ── */
@@ -2170,7 +2328,39 @@ static int run_extract(const char *bin, const char *dir, const char *pass,
     return rc;
 }
 
-static void find_largest_file_recursive(const char *dir, char *best_path, off_t *best_size) {
+static gboolean is_archive_filename(const char *filename) {
+    if (!filename || !filename[0]) return FALSE;
+    const char *dot = strrchr(filename, '.');
+    if (!dot) return FALSE;
+    const char *ext = dot + 1;
+    if (strcasecmp(ext, "rar") == 0 || strcasecmp(ext, "zip") == 0 ||
+        strcasecmp(ext, "7z") == 0  || strcasecmp(ext, "tar") == 0 ||
+        strcasecmp(ext, "gz") == 0  || strcasecmp(ext, "bz2") == 0 ||
+        strcasecmp(ext, "xz") == 0  || strcasecmp(ext, "001") == 0 ||
+        strcasecmp(ext, "002") == 0 || strcasecmp(ext, "003") == 0 ||
+        strcasecmp(ext, "r00") == 0 || strcasecmp(ext, "r01") == 0 ||
+        strcasecmp(ext, "part") == 0 || strcasecmp(ext, "tmp") == 0 ||
+        strcasecmp(ext, "crdownload") == 0) {
+        return TRUE;
+    }
+    if (g_ascii_strncasecmp(ext, "part", 4) == 0) return TRUE;
+    return FALSE;
+}
+
+static gboolean is_console_game_ext(const char *ext) {
+    if (!ext) return FALSE;
+    if (*ext == '.') ext++;
+    const char *game_exts[] = {
+        "pkg", "iso", "bin", "cue", "img", "xci", "nsp", "cia",
+        "chd", "cso", "wbfs", "rvz", "vpk", "nro", "3ds", "nds", NULL
+    };
+    for (int i = 0; game_exts[i]; i++) {
+        if (strcasecmp(ext, game_exts[i]) == 0) return TRUE;
+    }
+    return FALSE;
+}
+
+static void cleanup_archive_files_in_dir(const char *dir) {
     GDir *d = g_dir_open(dir, 0, NULL);
     if (!d) return;
     const gchar *name;
@@ -2179,9 +2369,72 @@ static void find_largest_file_recursive(const char *dir, char *best_path, off_t 
         struct stat st;
         if (stat(path, &st) == 0) {
             if (S_ISDIR(st.st_mode)) {
-                find_largest_file_recursive(path, best_path, best_size);
+                cleanup_archive_files_in_dir(path);
             } else if (S_ISREG(st.st_mode)) {
-                if (st.st_size > *best_size) {
+                if (is_archive_filename(name)) {
+                    unlink(path);
+                }
+            }
+        }
+        g_free(path);
+    }
+    g_dir_close(d);
+}
+
+static void cleanup_unneeded_extracted_files(const char *dir, const char *keep_file) {
+    GDir *d = g_dir_open(dir, 0, NULL);
+    if (!d) return;
+    const gchar *name;
+    while ((name = g_dir_read_name(d)) != NULL) {
+        char *path = g_build_filename(dir, name, NULL);
+        struct stat st;
+        if (stat(path, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                cleanup_unneeded_extracted_files(path, keep_file);
+                rmdir(path);
+            } else if (S_ISREG(st.st_mode)) {
+                if (!keep_file || strcmp(path, keep_file) != 0) {
+                    unlink(path);
+                }
+            }
+        }
+        g_free(path);
+    }
+    g_dir_close(d);
+}
+
+static void find_best_extracted_file_recursive(const char *dir, char *best_path, off_t *best_size, int *best_priority) {
+    GDir *d = g_dir_open(dir, 0, NULL);
+    if (!d) return;
+    const gchar *name;
+    while ((name = g_dir_read_name(d)) != NULL) {
+        char *path = g_build_filename(dir, name, NULL);
+        struct stat st;
+        if (stat(path, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                find_best_extracted_file_recursive(path, best_path, best_size, best_priority);
+            } else if (S_ISREG(st.st_mode)) {
+                if (is_archive_filename(name)) {
+                    /* Strict guard: NEVER select an archive file (.rar, .7z, .zip, etc.) */
+                    g_free(path);
+                    continue;
+                }
+                const char *dot = strrchr(name, '.');
+                int priority = 1;
+                if (dot) {
+                    if (is_console_game_ext(dot + 1)) {
+                        priority = 2; /* Primary console package (.pkg, .iso, etc.) */
+                    } else if (strcasecmp(dot + 1, "txt") == 0 ||
+                               strcasecmp(dot + 1, "nfo") == 0 ||
+                               strcasecmp(dot + 1, "sfv") == 0 ||
+                               strcasecmp(dot + 1, "url") == 0 ||
+                               strcasecmp(dot + 1, "md5") == 0 ||
+                               strcasecmp(dot + 1, "sha1") == 0) {
+                        priority = 0; /* Metadata or text file */
+                    }
+                }
+                if (priority > *best_priority || (priority == *best_priority && st.st_size > *best_size)) {
+                    *best_priority = priority;
                     *best_size = st.st_size;
                     g_strlcpy(best_path, path, 1024);
                 }
@@ -2190,6 +2443,11 @@ static void find_largest_file_recursive(const char *dir, char *best_path, off_t 
         g_free(path);
     }
     g_dir_close(d);
+}
+
+static void find_largest_file_recursive(const char *dir, char *best_path, off_t *best_size) {
+    int best_priority = -1;
+    find_best_extracted_file_recursive(dir, best_path, best_size, &best_priority);
 }
 
 /* ── Worker thread entry point ── */
@@ -2255,12 +2513,42 @@ static void *split_archive_thread_fn_internal(void *arg) {
         if (!raw_base[0]) {
             snprintf(basename, sizeof(basename), "part%02d", i + 1);
         } else {
-            char *decoded = curl_easy_unescape(NULL, raw_base, 0, NULL);
-            if (decoded) {
-                snprintf(basename, sizeof(basename), "%s", decoded);
-                curl_free(decoded);
-            } else {
-                snprintf(basename, sizeof(basename), "%s", raw_base);
+            /* Try base64 decoding raw_base in case URL is a base64 encoded CDN stream */
+            if (strlen(raw_base) >= 8) {
+                gsize dlen = 0;
+                guchar *dec = decode_base64_padded(raw_base, &dlen);
+                if (dec && dlen > 0) {
+                    char *dstr = g_strndup((const char *)dec, dlen);
+                    g_free(dec);
+                    char *dec_unesc = g_uri_unescape_string(dstr, NULL);
+                    const char *w = dec_unesc ? dec_unesc : dstr;
+                    const char *inner_sl = strrchr(w, '/');
+                    const char *leaf = inner_sl ? inner_sl + 1 : w;
+                    if (leaf && leaf[0] && strchr(leaf, '.')) {
+                        snprintf(basename, sizeof(basename), "%s", leaf);
+                    }
+                    if (dec_unesc) g_free(dec_unesc);
+                    g_free(dstr);
+                }
+            }
+            if (!basename[0]) {
+                char *decoded = curl_easy_unescape(NULL, raw_base, 0, NULL);
+                if (decoded) {
+                    snprintf(basename, sizeof(basename), "%s", decoded);
+                    curl_free(decoded);
+                } else {
+                    snprintf(basename, sizeof(basename), "%s", raw_base);
+                }
+            }
+        }
+        /* Ensure basename has an archive extension so unar/7z recognize format */
+        const char *b_dot = strrchr(basename, '.');
+        if (!b_dot || !is_known_ext(b_dot + 1)) {
+            char u_ext[16] = "";
+            extract_url_ext(sa->urls[i], u_ext, sizeof(u_ext));
+            if (u_ext[0]) {
+                strncat(basename, ".", sizeof(basename) - strlen(basename) - 1);
+                strncat(basename, u_ext, sizeof(basename) - strlen(basename) - 1);
             }
         }
         snprintf(part_paths[i], sizeof(part_paths[i]), "%s/%s", sa->tmp_dir, basename);
@@ -2460,7 +2748,15 @@ static void *split_archive_thread_fn_internal(void *arg) {
         }
         g_ptr_array_free(cand_pass, TRUE);
 
-        if (ret != 0) {
+        if (ret == 0) {
+            /* Extraction succeeded: clean up downloaded archive files and parts immediately */
+            for (int p = 0; p < sa->n_urls; p++) {
+                if (part_paths[p][0]) {
+                    unlink(part_paths[p]);
+                }
+            }
+            cleanup_archive_files_in_dir(sa->tmp_dir);
+        } else {
             if (last_meaningful_ret == -1) {
                 snprintf(dl->error_msg, sizeof(dl->error_msg), "Nessun tool di estrazione trovato. Installa 7zip o unar.");
             } else {
@@ -2480,32 +2776,37 @@ static void *split_archive_thread_fn_internal(void *arg) {
     off_t best_size = -1;
     find_largest_file_recursive(sa->tmp_dir, extracted_path, &best_size);
 
-    if (extracted_path[0] == '\0') {
+    if (extracted_path[0] == '\0' || is_archive_filename(extracted_path)) {
         snprintf(dl->error_msg, sizeof(dl->error_msg),
-                 "Nessun file valido trovato dopo l'estrazione.");
+                 "Nessun file console valido (.pkg/.iso) trovato dopo l'estrazione. Invio bloccato per sicurezza.");
         dl->status = DL_ERROR;
         post_update(dl);
         rm_dir_recursive(sa->tmp_dir);
         return NULL;
     }
 
-    /* Se il nome destinazione non ha estensione o è un archivio, usa l'estensione del file estratto */
+    /* Cancella tutte le parti residue e file inutili nella cartella temporanea lasciando solo il pacchetto estratto */
+    cleanup_unneeded_extracted_files(sa->tmp_dir, extracted_path);
+
+    /* Se il nome destinazione ha estensione archivio o non ha estensione, usa l'estensione del file estratto */
     char *extracted_base = g_path_get_basename(extracted_path);
     const char *ext_dot = strrchr(extracted_base, '.');
     if (ext_dot) {
-        const char *dest_dot = strrchr(sa->pkg_name, '.');
-        if (!dest_dot || strcasecmp(dest_dot, ".rar") == 0 || strcasecmp(dest_dot, ".zip") == 0 || strcasecmp(dest_dot, ".7z") == 0) {
-            if (dest_dot) {
-                char base_no_ext[SA_NAME_LEN];
-                g_strlcpy(base_no_ext, sa->pkg_name, sizeof(base_no_ext));
-                char *p = strrchr(base_no_ext, '.');
-                if (p) *p = '\0';
-                snprintf(sa->pkg_name, sizeof(sa->pkg_name), "%s%s", base_no_ext, ext_dot);
-            } else {
-                g_strlcat(sa->pkg_name, ext_dot, sizeof(sa->pkg_name));
-            }
-            g_strlcpy(dl->dest_name, sa->pkg_name, sizeof(dl->dest_name));
+        char base_no_ext[SA_NAME_LEN];
+        g_strlcpy(base_no_ext, sa->pkg_name, sizeof(base_no_ext));
+        char *p = strrchr(base_no_ext, '.');
+        if (p && (strcasecmp(p, ".rar") == 0 || strcasecmp(p, ".zip") == 0 ||
+                  strcasecmp(p, ".7z") == 0  || strcasecmp(p, ".part") == 0 ||
+                  strcasecmp(p, ".001") == 0)) {
+            *p = '\0';
         }
+        const char *cur_dot = strrchr(base_no_ext, '.');
+        if (!cur_dot || strcasecmp(cur_dot, ext_dot) != 0) {
+            snprintf(sa->pkg_name, sizeof(sa->pkg_name), "%s%s", base_no_ext, ext_dot);
+        } else {
+            g_strlcpy(sa->pkg_name, base_no_ext, sizeof(sa->pkg_name));
+        }
+        g_strlcpy(dl->dest_name, sa->pkg_name, sizeof(dl->dest_name));
     }
     g_free(extracted_base);
 
@@ -2792,7 +3093,7 @@ static gboolean is_known_ext(const char *ext) {
     if (*ext == '.') ext++;
     const char *known[] = {
         "pkg", "iso", "bin", "cue", "img", "xci", "nsp", "cia",
-        "chd", "cso", "wbfs", "rvz", "vpk", "3ds", "nds", "zip",
+        "chd", "cso", "wbfs", "rvz", "vpk", "nro", "3ds", "nds", "zip",
         "rar", "7z", "tar", "gz", "bz2", "xz", "001", "002",
         "part1", "part01", NULL
     };
@@ -2816,6 +3117,36 @@ static void extract_url_ext(const char *url, char *ext, size_t ext_size) {
     char *unescaped = g_uri_unescape_string(tmp, NULL);
     const char *work = unescaped ? unescaped : tmp;
     const char *dot = strrchr(work, '.');
+    if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN && is_known_ext(dot + 1)) {
+        g_strlcpy(ext, dot + 1, ext_size);
+        if (unescaped) g_free(unescaped);
+        return;
+    }
+
+    /* Try base64 decoding the last path component (e.g. FileDitch CDN streams) */
+    const char *slash = strrchr(work, '/');
+    const char *candidate = slash ? slash + 1 : work;
+    if (candidate && strlen(candidate) >= 8) {
+        gsize dlen = 0;
+        guchar *dec = decode_base64_padded(candidate, &dlen);
+        if (dec && dlen > 0) {
+            char *dstr = g_strndup((const char *)dec, dlen);
+            g_free(dec);
+            char *dec_unesc = g_uri_unescape_string(dstr, NULL);
+            const char *w = dec_unesc ? dec_unesc : dstr;
+            const char *d = strrchr(w, '.');
+            if (d && strlen(d) > 1 && strlen(d) <= EXT_MAX_LEN && is_known_ext(d + 1)) {
+                g_strlcpy(ext, d + 1, ext_size);
+            }
+            if (dec_unesc) g_free(dec_unesc);
+            g_free(dstr);
+            if (ext[0]) {
+                if (unescaped) g_free(unescaped);
+                return;
+            }
+        }
+    }
+
     if (dot && strlen(dot) > 1 && strlen(dot) <= EXT_MAX_LEN)
         g_strlcpy(ext, dot + 1, ext_size);
     if (unescaped) g_free(unescaped);
@@ -2856,16 +3187,27 @@ static Download *start_single_download(const char *url,
 
     char det_ext[32] = "";
     extract_url_ext(actual_url, det_ext, sizeof(det_ext));
-    if (det_ext[0] == '\0' && dest_name && dest_name[0]) {
+    if ((det_ext[0] == '\0' || !is_known_ext(det_ext)) && dest_name && dest_name[0]) {
         extract_url_ext(dest_name, det_ext, sizeof(det_ext));
     }
 
     char full_name[512] = "";
     if (dest_name && strlen(dest_name) > 0) {
         const char *dot = strrchr(dest_name, '.');
-        if (dot && is_known_ext(dot))
-            snprintf(full_name, sizeof(full_name), "%s", dest_name);
-        else if (det_ext[0])
+        if (dot && is_known_ext(dot)) {
+            /* If the destination filename has .pkg but the actual URL is an archive (.rar/.zip/.7z),
+             * don't let .pkg mislead the pipeline into streaming raw archive to console */
+            if (det_ext[0] && (strcasecmp(det_ext, "rar") == 0 || strcasecmp(det_ext, "7z") == 0 || strcasecmp(det_ext, "zip") == 0) &&
+                strcasecmp(dot + 1, det_ext) != 0) {
+                char base_only[256];
+                g_strlcpy(base_only, dest_name, sizeof(base_only));
+                char *p = strrchr(base_only, '.');
+                if (p) *p = '\0';
+                snprintf(full_name, sizeof(full_name), "%.240s.%.32s", base_only, det_ext);
+            } else {
+                snprintf(full_name, sizeof(full_name), "%s", dest_name);
+            }
+        } else if (det_ext[0])
             snprintf(full_name, sizeof(full_name), "%s.%s", dest_name, det_ext);
         else
             snprintf(full_name, sizeof(full_name), "%s", dest_name);
@@ -6043,6 +6385,8 @@ static gboolean dlps_extract_slug(const char *input, char *out_slug, size_t out_
 
     const char *domains[] = {
         "dlpsgame.com/",
+        "downloadgameps3.net/",
+        "downloadgameps3.com/",
         "downloadgamepsp.org/",
         "dlxbgame.com/",
         "gamepciso.com/",
@@ -6421,6 +6765,11 @@ typedef struct {
     AutoSession *sess;
 } DlpsActionData;
 
+static void free_action_data_closure(gpointer data, GClosure *closure) {
+    (void)closure;
+    free(data);
+}
+
 static void on_copy_str_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     const char *text = (const char *)user_data;
@@ -6432,9 +6781,11 @@ static void on_copy_str_clicked(GtkButton *btn, gpointer user_data) {
 
 static void on_open_browser_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
-    const char *url = (const char *)user_data;
-    if (url && url[0]) {
-        g_app_info_launch_default_for_uri(url, NULL, NULL);
+    DlpsActionData *d = (DlpsActionData *)user_data;
+    if (d && d->url[0]) {
+        clip_watch_arm(d->game_title, d->password);
+        g_app_info_launch_default_for_uri(d->url, NULL, NULL);
+        show_toast("Browser aperto per verifica:\nNON scaricare dal browser! Copia l'indirizzo del link finale (Tasto destro -> Copia link), e P2C Downloader avvierà il download verso la console.");
     }
 }
 
@@ -6464,8 +6815,14 @@ static gboolean on_mediafire_resolved_idle(gpointer user_data) {
         if (res->dialog && GTK_IS_WINDOW(res->dialog)) {
             gtk_window_destroy(GTK_WINDOW(res->dialog));
         }
+        char ext[32] = "";
+        extract_url_ext(res->direct_url, ext, sizeof(ext));
         char dest_name[256];
-        snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+        if (ext[0] && (strcasecmp(ext, "rar") == 0 || strcasecmp(ext, "7z") == 0 || strcasecmp(ext, "zip") == 0)) {
+            snprintf(dest_name, sizeof(dest_name), "%.240s.%s", res->game_title, ext);
+        } else {
+            snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+        }
         show_toast("Link Mediafire risolto: download avviato verso la PS!");
         start_single_download(res->direct_url, dest_name, res->password);
         auto_session_free(res->sess);
@@ -6573,8 +6930,14 @@ static gboolean on_onefichier_resolved_idle(gpointer user_data) {
         if (res->dialog && GTK_IS_WINDOW(res->dialog)) {
             gtk_window_destroy(GTK_WINDOW(res->dialog));
         }
+        char ext[32] = "";
+        extract_url_ext(res->direct_url, ext, sizeof(ext));
         char dest_name[256];
-        snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+        if (ext[0] && (strcasecmp(ext, "rar") == 0 || strcasecmp(ext, "7z") == 0 || strcasecmp(ext, "zip") == 0)) {
+            snprintf(dest_name, sizeof(dest_name), "%.240s.%s", res->game_title, ext);
+        } else {
+            snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+        }
         show_toast("Link 1Fichier risolto: download avviato verso la PS!");
         start_single_download(res->direct_url, dest_name, res->password);
         if (g_stack) gtk_stack_set_visible_child_name(GTK_STACK(g_stack), "list");
@@ -6729,8 +7092,14 @@ static gboolean on_realdebrid_resolved_idle(gpointer user_data) {
         if (res->dialog && GTK_IS_WINDOW(res->dialog)) {
             gtk_window_destroy(GTK_WINDOW(res->dialog));
         }
+        char ext[32] = "";
+        extract_url_ext(res->download_url, ext, sizeof(ext));
         char dest_name[256];
-        snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+        if (ext[0] && (strcasecmp(ext, "rar") == 0 || strcasecmp(ext, "7z") == 0 || strcasecmp(ext, "zip") == 0)) {
+            snprintf(dest_name, sizeof(dest_name), "%.240s.%s", res->game_title, ext);
+        } else {
+            snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+        }
         start_single_download(res->download_url, dest_name, res->password);
         show_toast("Link sbloccato con Real-Debrid: download avviato!");
         auto_session_free(res->sess);
@@ -6856,6 +7225,9 @@ typedef struct {
     char cookie[4096];
     char user_agent[512];
     char referer[2048];
+    char filename[256];
+    char title[256];
+    char content_type[128];
     GtkWidget *dialog;
     AutoSession *sess;
 } UcResolveRes;
@@ -6879,20 +7251,43 @@ static gboolean on_uc_resolved_idle(gpointer user_data) {
             g_uc_last_referer[sizeof(g_uc_last_referer) - 1] = '\0';
         }
         show_toast("Link sbloccato con Undetected ChromeDriver!");
-        if (!dlps_dispatch_link(res->resolved_url, res->game_title, res->password, FALSE, NULL)) {
-            if (url_looks_direct_file(res->resolved_url) || strcasestr(res->resolved_url, "download")) {
-                char dest_name[256];
-                snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
-                start_single_download(res->resolved_url, dest_name, res->password);
-                auto_session_free(res->sess);
-            } else if (res->sess) {
-                show_prep_progress("Risolutore UC: link non valido, provo successivo...");
-                auto_session_next(res->sess);
-            } else {
-                show_toast("Link risolto non valido per il download diretto.");
-            }
+
+        /* If the resolved link points to a hoster resolver (MediaFire, 1fichier), delegate to it */
+        if (strstr(res->resolved_url, "mediafire.com/file/")) {
+            trigger_mediafire_resolve(res->resolved_url, res->game_title, res->password, NULL, res->sess);
+            res->sess = NULL;
+        } else if (strstr(res->resolved_url, "1fichier.com/")) {
+            trigger_onefichier_resolve(res->resolved_url, res->game_title, res->password, NULL, res->sess);
+            res->sess = NULL;
         } else {
+            /* Direct file or CDN stream resolved */
+            char ext[32] = "";
+            extract_url_ext(res->resolved_url, ext, sizeof(ext));
+            if ((!ext[0] || !is_known_ext(ext)) && res->filename[0]) {
+                extract_url_ext(res->filename, ext, sizeof(ext));
+            }
+            if ((!ext[0] || !is_known_ext(ext)) && res->title[0]) {
+                extract_url_ext(res->title, ext, sizeof(ext));
+            }
+            if ((!ext[0] || !is_known_ext(ext)) && res->referer[0]) {
+                extract_url_ext(res->referer, ext, sizeof(ext));
+            }
+            if ((!ext[0] || !is_known_ext(ext)) && res->content_type[0]) {
+                if (strstr(res->content_type, "rar")) g_strlcpy(ext, "rar", sizeof(ext));
+                else if (strstr(res->content_type, "zip")) g_strlcpy(ext, "zip", sizeof(ext));
+                else if (strstr(res->content_type, "7z")) g_strlcpy(ext, "7z", sizeof(ext));
+            }
+
+            char dest_name[256];
+            if (ext[0] && is_known_ext(ext)) {
+                snprintf(dest_name, sizeof(dest_name), "%.240s.%s", res->game_title, ext);
+            } else {
+                snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", res->game_title);
+            }
+            show_toast("Link sbloccato! Avvio download verso la console...");
+            start_single_download(res->resolved_url, dest_name, res->password);
             auto_session_free(res->sess);
+            res->sess = NULL;
         }
     } else if (res->sess) {
         show_prep_progress("Risolutore UC: tentativo con link successivo...");
@@ -6989,6 +7384,18 @@ static void *uc_resolve_thread(void *arg) {
                         const char *pw = json_object_get_string_member(obj, "password");
                         if (pw && pw[0]) strncpy(res->password, pw, sizeof(res->password) - 1);
                     }
+                    if (json_object_has_member(obj, "filename")) {
+                        const char *fn = json_object_get_string_member(obj, "filename");
+                        if (fn && fn[0]) strncpy(res->filename, fn, sizeof(res->filename) - 1);
+                    }
+                    if (json_object_has_member(obj, "title")) {
+                        const char *tl = json_object_get_string_member(obj, "title");
+                        if (tl && tl[0]) strncpy(res->title, tl, sizeof(res->title) - 1);
+                    }
+                    if (json_object_has_member(obj, "content_type")) {
+                        const char *ct = json_object_get_string_member(obj, "content_type");
+                        if (ct && ct[0]) strncpy(res->content_type, ct, sizeof(res->content_type) - 1);
+                    }
                 } else if (json_object_has_member(obj, "message")) {
                     strncpy(res->error_msg, json_object_get_string_member(obj, "message"), sizeof(res->error_msg) - 1);
                 }
@@ -7047,14 +7454,57 @@ static gboolean url_is_protected(const char *url) {
 }
 
 static gboolean url_looks_direct_file(const char *url) {
+    if (!url || strncmp(url, "http", 4) != 0) return FALSE;
     char tmp[2048];
     strncpy(tmp, url, sizeof(tmp) - 1);
     tmp[sizeof(tmp) - 1] = '\0';
     char *q = strchr(tmp, '?');
     if (q) *q = '\0';
+
     if (strcasestr(tmp, ".pkg") || strcasestr(tmp, ".rar") ||
-        strcasestr(tmp, ".7z")  || strcasestr(tmp, ".zip"))
+        strcasestr(tmp, ".7z")  || strcasestr(tmp, ".zip") ||
+        strcasestr(tmp, ".iso") || strcasestr(tmp, ".bin") ||
+        strcasestr(tmp, ".cue") || strcasestr(tmp, ".xci") ||
+        strcasestr(tmp, ".nsp") || strcasestr(tmp, ".cia") ||
+        strcasestr(tmp, ".chd") || strcasestr(tmp, ".cso") ||
+        strcasestr(tmp, ".wbfs")|| strcasestr(tmp, ".rvz") ||
+        strcasestr(tmp, ".vpk") || strcasestr(tmp, ".nro") ||
+        strcasestr(tmp, ".3ds") || strcasestr(tmp, ".nds") ||
+        strcasestr(tmp, ".tar") || strcasestr(tmp, ".gz")  ||
+        strcasestr(tmp, ".bz2") || strcasestr(tmp, ".xz")  ||
+        strcasestr(tmp, ".001") || strcasestr(tmp, ".002"))
         return TRUE;
+
+    if (strstr(tmp, "staysharpsleeps8hours.xyz/") ||
+        strstr(tmp, "fishoilenjoyer.xyz/") ||
+        strstr(tmp, "akirabox.com/download/") ||
+        strstr(tmp, "download.akirabox.com/") ||
+        strstr(tmp, "vikingfile.com/d/") ||
+        strstr(tmp, "pixeldrain.com/api/file/"))
+        return TRUE;
+
+    /* Base64 encoded payload in URL path (e.g. FileDitch CDN streams) */
+    char *slash = strrchr(tmp, '/');
+    const char *candidate = slash ? slash + 1 : tmp;
+    if (candidate && strlen(candidate) >= 8) {
+        gsize dlen = 0;
+        guchar *dec = decode_base64_padded(candidate, &dlen);
+        if (dec && dlen > 0) {
+            char *dstr = g_strndup((const char *)dec, dlen);
+            g_free(dec);
+            char *unesc = g_uri_unescape_string(dstr, NULL);
+            const char *check = unesc ? unesc : dstr;
+            gboolean match = (strcasestr(check, ".pkg") != NULL ||
+                              strcasestr(check, ".rar") != NULL ||
+                              strcasestr(check, ".7z")  != NULL ||
+                              strcasestr(check, ".zip") != NULL ||
+                              strcasestr(check, ".iso") != NULL);
+            if (unesc) g_free(unesc);
+            g_free(dstr);
+            if (match) return TRUE;
+        }
+    }
+
     return FALSE;
 }
 
@@ -7085,8 +7535,14 @@ static gboolean dlps_dispatch_link(const char *url, const char *title,
     }
 
     if (url_looks_direct_file(url)) {
+        char ext[32] = "";
+        extract_url_ext(url, ext, sizeof(ext));
         char dest_name[256];
-        snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", title);
+        if (ext[0] && (strcasecmp(ext, "rar") == 0 || strcasecmp(ext, "7z") == 0 || strcasecmp(ext, "zip") == 0)) {
+            snprintf(dest_name, sizeof(dest_name), "%.240s.%s", title, ext);
+        } else {
+            snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", title);
+        }
         show_toast("Link diretto rilevato: download avviato verso la PS!");
         start_single_download(url, dest_name, pass);
         auto_session_free(sess);
@@ -7226,11 +7682,7 @@ static void auto_session_next(AutoSession *sess) {
     if (manual) {
         clip_watch_arm(sess->title, sess->pass);
         g_app_info_launch_default_for_uri(manual, NULL, NULL);
-        if (g_uc_enabled && is_uc_resolver_available()) {
-            show_toast("Risoluzione automatica non riuscita: sblocca nel browser e copia il link finale.");
-        } else {
-            show_toast("Serve una verifica manuale: completala nel browser e copia il link finale, il download parte da solo.");
-        }
+        show_toast("Verifica browser aperta: NON scaricare dal browser!\nCopia l'indirizzo del link finale (Tasto destro -> Copia link), il download partirà verso la console.");
     } else {
         show_toast("Nessun link scaricabile automaticamente per questo gioco.");
     }
@@ -7396,8 +7848,14 @@ static void on_start_direct_dl_clicked(GtkButton *btn, gpointer user_data) {
         }
     }
 
+    char ext[32] = "";
+    extract_url_ext(url, ext, sizeof(ext));
     char dest_name[256];
-    snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", data->game_title);
+    if (ext[0] && (strcasecmp(ext, "rar") == 0 || strcasecmp(ext, "7z") == 0 || strcasecmp(ext, "zip") == 0)) {
+        snprintf(dest_name, sizeof(dest_name), "%.240s.%s", data->game_title, ext);
+    } else {
+        snprintf(dest_name, sizeof(dest_name), "%.250s.pkg", data->game_title);
+    }
 
     if (data->dialog && GTK_IS_WINDOW(data->dialog)) {
         gtk_window_destroy(GTK_WINDOW(data->dialog));
@@ -7582,7 +8040,13 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
         if (game->links[i].type == DLPS_LINK_DIRECT_PKG) {
             DlpsPreFillData *pfd = malloc(sizeof(DlpsPreFillData));
             g_strlcpy(pfd->url, game->links[i].url, sizeof(pfd->url));
-            snprintf(pfd->dest_name, sizeof(pfd->dest_name), "%.250s.pkg", game->title);
+            char ext[32] = "";
+            extract_url_ext(game->links[i].url, ext, sizeof(ext));
+            if (ext[0] && (strcasecmp(ext, "rar") == 0 || strcasecmp(ext, "7z") == 0 || strcasecmp(ext, "zip") == 0)) {
+                snprintf(pfd->dest_name, sizeof(pfd->dest_name), "%.240s.%s", game->title, ext);
+            } else {
+                snprintf(pfd->dest_name, sizeof(pfd->dest_name), "%.250s.pkg", game->title);
+            }
             g_strlcpy(pfd->password, game->password, sizeof(pfd->password));
             pfd->dialog = dialog;
 
@@ -7676,7 +8140,13 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             GtkWidget *btn_wb = gtk_button_new_with_label(btn_lbl);
             gtk_widget_add_css_class(btn_wb, "btn-browser");
             gtk_widget_set_focusable(btn_wb, FALSE);
-            g_signal_connect(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), (gpointer)game->links[i].url);
+            DlpsActionData *wbd = malloc(sizeof(DlpsActionData));
+            g_strlcpy(wbd->url, game->links[i].url, sizeof(wbd->url));
+            g_strlcpy(wbd->game_title, game->title, sizeof(wbd->game_title));
+            g_strlcpy(wbd->password, game->password, sizeof(wbd->password));
+            wbd->dialog = dialog;
+            wbd->sess = NULL;
+            g_signal_connect_data(btn_wb, "clicked", G_CALLBACK(on_open_browser_clicked), wbd, (GClosureNotify)free_action_data_closure, 0);
             gtk_box_append(GTK_BOX(row), btn_wb);
         }
 
@@ -8196,9 +8666,18 @@ static void on_dlps_clicked(GtkButton *btn, gpointer user_data) {
     }
 }
 
-/* ═══════════════════════════════════════════════════════════
- * Inizializzazione applicazione e costruzione finestra principale
- * ═══════════════════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════════════ */
+static gboolean g_smoke_test = FALSE;
+
+static gboolean on_smoke_test_timer(gpointer user_data) {
+    GtkApplication *app = GTK_APPLICATION(user_data);
+    g_print("[SMOKE TEST] Application and UI successfully initialized.\n");
+    if (g_window && GTK_IS_WINDOW(g_window)) {
+        gtk_window_destroy(GTK_WINDOW(g_window));
+    }
+    g_application_quit(G_APPLICATION(app));
+    return G_SOURCE_REMOVE;
+}
 
 static void activate(GtkApplication *app, gpointer user_data) {
     (void)user_data;
@@ -8434,20 +8913,42 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_window_present(GTK_WINDOW(g_window));
     trigger_ftp_ensure_dir_async();
     trigger_catalog_fetch_async();
+
+    if (g_smoke_test) {
+        g_timeout_add(600, on_smoke_test_timer, app);
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════
  * Punto di ingresso principale (main)
  * ═══════════════════════════════════════════════════════════ */
 
+#ifndef P2C_UNIT_TESTING
 int main(int argc, char **argv) {
     curl_global_init(CURL_GLOBAL_ALL);
 
-    GtkApplication *app = gtk_application_new(APP_ID, G_APPLICATION_DEFAULT_FLAGS);
+    char **clean_argv = malloc((argc + 1) * sizeof(char *));
+    int clean_argc = 0;
+    for (int i = 0; i < argc; i++) {
+        if (strcmp(argv[i], "--smoke-test") == 0 || strcmp(argv[i], "-t") == 0) {
+            g_smoke_test = TRUE;
+        } else {
+            clean_argv[clean_argc++] = argv[i];
+        }
+    }
+    clean_argv[clean_argc] = NULL;
+
+    GApplicationFlags app_flags = G_APPLICATION_DEFAULT_FLAGS;
+    if (g_smoke_test) {
+        app_flags |= G_APPLICATION_NON_UNIQUE;
+    }
+    GtkApplication *app = gtk_application_new(g_smoke_test ? "com.github.p2cdownloader.smoketest" : APP_ID, app_flags);
     g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
-    int status = g_application_run(G_APPLICATION(app), argc, argv);
+    int status = g_application_run(G_APPLICATION(app), clean_argc, clean_argv);
     g_object_unref(app);
+    free(clean_argv);
 
     curl_global_cleanup();
     return status;
 }
+#endif

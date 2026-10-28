@@ -15,7 +15,7 @@ DATADIR        = $(PREFIX)/share/$(TARGET)
 APPDIR         = $(PREFIX)/share/applications
 PIXMAPSDIR     = $(PREFIX)/share/pixmaps
 
-.PHONY: all clean install uninstall deb deb-install run
+.PHONY: all clean install uninstall deb deb-install run test
 
 all: $(TARGET)
 
@@ -25,6 +25,9 @@ $(TARGET): $(SRC)
 	@echo "  [OK] Build completed -> ./$(TARGET)"
 	@echo "  Run with: ./$(TARGET)"
 	@echo ""
+
+test: all
+	@cd .. && ./run_tests.sh
 
 run: all
 	./$(TARGET)

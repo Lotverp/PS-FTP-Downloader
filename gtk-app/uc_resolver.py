@@ -57,6 +57,10 @@ HOSTER_DOMAINS = [
 # Direct CDN / File stream patterns that don't need further navigation
 DIRECT_CDN_PATTERNS = [
     re.compile(r"fishoilenjoyer\.xyz/", re.IGNORECASE),
+    re.compile(r"staysharpsleeps8hours\.xyz/", re.IGNORECASE),
+    re.compile(r"fileditchfiles\.st/", re.IGNORECASE),
+    re.compile(r"fileditch\.com/", re.IGNORECASE),
+    re.compile(r"fileditch\.ch/", re.IGNORECASE),
     re.compile(r"akirabox\.com/download/", re.IGNORECASE),
     re.compile(r"download\.akirabox\.com/", re.IGNORECASE),
     re.compile(r"vikingfile\.com/d/", re.IGNORECASE),
@@ -151,6 +155,18 @@ def close_rogue_ad_windows(driver, main_handle=None):
         except Exception:
             pass
 
+class DownloadCheckResult:
+    def __init__(self, ok, filename="", content_type=""):
+        self.ok = bool(ok)
+        self.filename = filename or ""
+        self.content_type = content_type or ""
+
+    def __bool__(self):
+        return self.ok
+
+    def __iter__(self):
+        return iter((self.ok, self.filename, self.content_type))
+
 def verify_download_link(url, cookie_str=None, user_agent=None, referer=None, timeout=6):
     """Performs a quick HTTP check to verify the URL does not return 404/410/403/500."""
     import urllib.request
@@ -165,13 +181,21 @@ def verify_download_link(url, cookie_str=None, user_agent=None, referer=None, ti
             headers['Cookie'] = cookie_str
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status in (200, 206, 301, 302, 303, 307)
+            cd = resp.headers.get("Content-Disposition", "")
+            fname = ""
+            if "filename=" in cd or "filename*=" in cd:
+                m = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';\r\n]+)', cd)
+                if m:
+                    fname = urllib.parse.unquote(m.group(1).strip('"\''))
+            ctype = resp.headers.get("Content-Type", "")
+            ok = resp.status in (200, 206, 301, 302, 303, 307)
+            return DownloadCheckResult(ok, fname, ctype)
     except urllib.error.HTTPError as e:
         if e.code in (404, 410, 403, 500, 502):
-            return False
-        return e.code not in (404, 410)
+            return DownloadCheckResult(False, "", "")
+        return DownloadCheckResult(e.code not in (404, 410), "", "")
     except Exception:
-        return True
+        return DownloadCheckResult(True, "", "")
 
 def wait_for_cloudflare(driver, timeout=20):
     """Wait for Cloudflare Turnstile / Managed Challenge to complete."""
@@ -382,10 +406,10 @@ def extract_direct_download_from_hoster(driver, timeout=15):
         try:
             # FileDitch
             if "fileditch" in curr_url or "itsfileditchfiles" in curr_url:
-                d_links = driver.find_elements(By.CSS_SELECTOR, "a.btn-main, a.btn")
+                d_links = driver.find_elements(By.CSS_SELECTOR, "a.btn-main, a.btn, a[href*='staysharpsleeps8hours.xyz'], a[href*='fishoilenjoyer.xyz']")
                 for l in d_links:
                     href = l.get_attribute("href") or ""
-                    if "fishoilenjoyer.xyz" in href or "download" in l.text.lower():
+                    if "fishoilenjoyer.xyz" in href or "staysharpsleeps8hours.xyz" in href or "download" in l.text.lower():
                         return href
 
             # AkiraBox
@@ -482,6 +506,20 @@ def extract_direct_download_from_hoster(driver, timeout=15):
     return None
 
 def solve_url(url, password=None, timeout=45, headless=False, custom_browser=None):
+    if is_direct_stream_url(url) or is_direct_file_url(url):
+        return {
+            "success": True,
+            "url": url,
+            "title": "",
+            "filename": "",
+            "content_type": "",
+            "cookie": "",
+            "user_agent": "",
+            "referer": url,
+            "password": password or "",
+            "source": "already_direct"
+        }
+
     deps = check_dependencies()
     if not deps["ready"]:
         return {
@@ -498,14 +536,16 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
 
     import tempfile
     temp_profile_dir = tempfile.mkdtemp(prefix="p2c_uc_")
+    temp_dl_dir = tempfile.mkdtemp(prefix="p2c_dl_sandbox_")
 
     options = uc.ChromeOptions()
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-features=DownloadBubble,DownloadBubbleV2")
     prefs = {
-        "download.default_directory": "/dev/null",
+        "download.default_directory": temp_dl_dir,
         "download.prompt_for_download": False,
         "download.directory_upgrade": True,
         "safebrowsing.enabled": False,
@@ -530,6 +570,14 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
             browser_executable_path=browser_bin,
             use_subprocess=True
         )
+        try:
+            driver.execute_cdp_cmd("Browser.setDownloadBehavior", {"behavior": "deny"})
+        except Exception:
+            pass
+        try:
+            driver.execute_cdp_cmd("Page.setDownloadBehavior", {"behavior": "deny"})
+        except Exception:
+            pass
         try:
             driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
                 "source": """
@@ -675,11 +723,14 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
                                 cookie_str = "; ".join(cookie_parts)
                                 user_agent = driver.execute_script("return navigator.userAgent;") or ""
                                 referer_url = driver.current_url or cand_url
-                                if verify_download_link(cand_direct, cookie_str, user_agent, referer_url):
+                                check_res = verify_download_link(cand_direct, cookie_str, user_agent, referer_url)
+                                if check_res:
                                     return {
                                         "success": True,
                                         "url": cand_direct,
-                                        "title": driver.title,
+                                        "title": driver.title or check_res.filename,
+                                        "filename": check_res.filename,
+                                        "content_type": check_res.content_type,
                                         "cookie": cookie_str,
                                         "user_agent": user_agent,
                                         "referer": referer_url,
@@ -732,17 +783,21 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
             pass
 
         referer_url = driver.current_url or current_page
-        if direct_download_url and verify_download_link(direct_download_url, cookie_str, user_agent, referer_url):
-            return {
-                "success": True,
-                "url": direct_download_url,
-                "title": driver.title,
-                "cookie": cookie_str,
-                "user_agent": user_agent,
-                "referer": referer_url,
-                "password": detected_password or "",
-                "source": "resolved_direct_cdn"
-            }
+        if direct_download_url:
+            check_res = verify_download_link(direct_download_url, cookie_str, user_agent, referer_url)
+            if check_res:
+                return {
+                    "success": True,
+                    "url": direct_download_url,
+                    "title": driver.title or check_res.filename,
+                    "filename": check_res.filename,
+                    "content_type": check_res.content_type,
+                    "cookie": cookie_str,
+                    "user_agent": user_agent,
+                    "referer": referer_url,
+                    "password": detected_password or "",
+                    "source": "resolved_direct_cdn"
+                }
 
         # If still on a hoster landing page and could not extract direct, return hoster page URL with cookies
         final_url = driver.current_url
@@ -800,6 +855,11 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
         if 'temp_profile_dir' in locals() and temp_profile_dir and os.path.exists(temp_profile_dir):
             try:
                 shutil.rmtree(temp_profile_dir, ignore_errors=True)
+            except Exception:
+                pass
+        if 'temp_dl_dir' in locals() and temp_dl_dir and os.path.exists(temp_dl_dir):
+            try:
+                shutil.rmtree(temp_dl_dir, ignore_errors=True)
             except Exception:
                 pass
 
