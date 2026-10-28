@@ -5148,7 +5148,13 @@ static DlpsLinkType detect_dlps_link_type(const char *url) {
 
 static void extract_dlps_links(const char *html_text, DlpsGame *g) {
     if (!html_text || !g) return;
-    g->n_links = 0;
+
+    /* Detect payload tag context if available (FPKG, Dump, Update, DLC, etc.) */
+    const char *payload_tag = "";
+    if (strstr(html_text, "FPKG")) payload_tag = "FPKG";
+    else if (strstr(html_text, "Dump")) payload_tag = "Dump";
+    else if (strstr(html_text, "Backport") || strstr(html_text, "Update")) payload_tag = "Update";
+    else if (strstr(html_text, "DLC")) payload_tag = "DLC";
 
     GRegex *p_re = g_regex_new("<p[^>]*>(.*?)</p>", G_REGEX_DOTALL | G_REGEX_CASELESS, 0, NULL);
     GRegex *a_re = g_regex_new("<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>", G_REGEX_DOTALL | G_REGEX_CASELESS, 0, NULL);
@@ -5169,14 +5175,16 @@ static void extract_dlps_links(const char *html_text, DlpsGame *g) {
                     unescape_html(prefix);
                     g_strstrip(prefix);
                     size_t l = strlen(prefix);
-                    while (l > 0 && (prefix[l-1] == ':' || prefix[l-1] == '-' || prefix[l-1] == ' ')) {
+                    while (l > 0 && (prefix[l-1] == ':' || prefix[l-1] == '-' || prefix[l-1] == ' ' || prefix[l-1] == '\t')) {
                         prefix[--l] = '\0';
                     }
                     g_strstrip(prefix);
                 }
 
                 if (g_ascii_strncasecmp(prefix, "guide", 5) == 0 ||
-                    g_ascii_strncasecmp(prefix, "note", 4) == 0) {
+                    g_ascii_strncasecmp(prefix, "note", 4) == 0 ||
+                    g_ascii_strncasecmp(prefix, "how to", 6) == 0 ||
+                    g_ascii_strncasecmp(prefix, "tested", 6) == 0) {
                     prefix[0] = '\0';
                 }
 
@@ -5187,7 +5195,7 @@ static void extract_dlps_links(const char *html_text, DlpsGame *g) {
                         char *text = g_match_info_fetch(a_info, 2);
 
                         if (href && text && strncmp(href, "http", 4) == 0 &&
-                            !strstr(href, "guide-download")) {
+                            !strstr(href, "guide-download") && !strstr(href, "how-to")) {
                             char clean_text[128];
                             strncpy(clean_text, text, sizeof(clean_text) - 1);
                             clean_text[sizeof(clean_text) - 1] = '\0';
@@ -5195,35 +5203,64 @@ static void extract_dlps_links(const char *html_text, DlpsGame *g) {
                             unescape_html(clean_text);
                             g_strstrip(clean_text);
 
-                            if (g_ascii_strcasecmp(clean_text, "here") != 0 &&
-                                g_ascii_strcasecmp(clean_text, "guide download") != 0) {
+                            if (g_ascii_strcasecmp(clean_text, "guide download") != 0 &&
+                                g_ascii_strcasecmp(clean_text, "tool download") != 0 &&
+                                g_ascii_strcasecmp(clean_text, "tutorial") != 0) {
 
-                                DlpsLinkType ltype = detect_dlps_link_type(href);
-                                const char *hoster = clean_text;
-                                if (strstr(href, "mediafire.com") && !strcasestr(clean_text, "mediafire")) {
-                                    hoster = "Mediafire";
-                                } else if (strstr(href, "1fichier.com") && !strcasestr(clean_text, "1fichier") && !strcasestr(clean_text, "1file")) {
-                                    hoster = "1fichier";
-                                } else if (strstr(href, "akirabox.com") && !strcasestr(clean_text, "akia")) {
-                                    hoster = "Akia";
-                                } else if (strstr(href, "rootz.so") && !strcasestr(clean_text, "rootz")) {
-                                    hoster = "Rootz";
-                                } else if (strstr(href, "downloadgameps3.net")) {
-                                    hoster = clean_text[0] ? clean_text : "DownloadGamePS3";
+                                /* Check URL duplication */
+                                gboolean is_dup = FALSE;
+                                for (int l = 0; l < g->n_links; l++) {
+                                    if (strcmp(g->links[l].url, href) == 0) {
+                                        is_dup = TRUE;
+                                        break;
+                                    }
                                 }
 
-                                char final_name[256];
-                                if (prefix[0] && g_ascii_strcasecmp(prefix, hoster) != 0) {
-                                    snprintf(final_name, sizeof(final_name), "%s [%s]", prefix, hoster);
-                                } else {
-                                    snprintf(final_name, sizeof(final_name), "%s", hoster[0] ? hoster : "Download Link");
-                                }
+                                if (!is_dup) {
+                                    DlpsLinkType ltype = detect_dlps_link_type(href);
+                                    const char *hoster = clean_text;
 
-                                g_strlcpy(g->links[g->n_links].name, final_name, sizeof(g->links[0].name));
-                                g_strlcpy(g->links[g->n_links].url, href, sizeof(g->links[0].url));
-                                g_strlcpy(g->links[g->n_links].hoster, hoster, sizeof(g->links[0].hoster));
-                                g->links[g->n_links].type = ltype;
-                                g->n_links++;
+                                    if (strstr(href, "mediafire.com") && !strcasestr(clean_text, "mediafire")) {
+                                        hoster = "Mediafire";
+                                    } else if (strstr(href, "1fichier.com") && !strcasestr(clean_text, "1fichier") && !strcasestr(clean_text, "1file")) {
+                                        hoster = "1fichier";
+                                    } else if (strstr(href, "akirabox.com") && !strcasestr(clean_text, "akia")) {
+                                        hoster = "Akia";
+                                    } else if (strstr(href, "rootz.so") && !strcasestr(clean_text, "rootz")) {
+                                        hoster = "Rootz";
+                                    } else if (strstr(href, "mega.nz") && !strcasestr(clean_text, "mega")) {
+                                        hoster = "Mega";
+                                    } else if (strstr(href, "rapidgator.net") && !strcasestr(clean_text, "rapidgator")) {
+                                        hoster = "Rapidgator";
+                                    } else if (strstr(href, "filecrypt.cc")) {
+                                        hoster = (clean_text[0] && g_ascii_strcasecmp(clean_text, "here") != 0 && g_ascii_strcasecmp(clean_text, "link") != 0) ? clean_text : "Filecrypt";
+                                    } else if (strstr(href, "downloadgameps3.net")) {
+                                        hoster = (clean_text[0] && g_ascii_strcasecmp(clean_text, "here") != 0 && g_ascii_strcasecmp(clean_text, "link") != 0) ? clean_text : "DownloadGamePS3";
+                                    } else if (g_ascii_strcasecmp(clean_text, "here") == 0 || g_ascii_strcasecmp(clean_text, "link") == 0 || !clean_text[0]) {
+                                        hoster = "Download Link";
+                                    }
+
+                                    char cur_pfx[160];
+                                    g_strlcpy(cur_pfx, prefix, sizeof(cur_pfx));
+                                    if ((g_ascii_strcasecmp(cur_pfx, "link") == 0 || cur_pfx[0] == '\0') && payload_tag[0]) {
+                                        g_strlcpy(cur_pfx, payload_tag, sizeof(cur_pfx));
+                                    } else if (g_ascii_strcasecmp(cur_pfx, "link") == 0) {
+                                        cur_pfx[0] = '\0';
+                                    }
+
+                                    char final_name[256];
+                                    if (cur_pfx[0] && g_ascii_strcasecmp(cur_pfx, hoster) != 0) {
+                                        snprintf(final_name, sizeof(final_name), "%s [%s]", cur_pfx, hoster);
+                                    } else {
+                                        snprintf(final_name, sizeof(final_name), "%s", hoster[0] ? hoster : "Download Link");
+                                    }
+
+                                    g_strlcpy(g->links[g->n_links].name, final_name, sizeof(g->links[0].name));
+                                    g_strlcpy(g->links[g->n_links].url, href, sizeof(g->links[0].url));
+                                    g_strlcpy(g->links[g->n_links].hoster, hoster, sizeof(g->links[0].hoster));
+                                    g->links[g->n_links].type = ltype;
+                                    g->n_links++;
+                                }
                             }
                         }
                         g_free(href);
@@ -5240,26 +5277,53 @@ static void extract_dlps_links(const char *html_text, DlpsGame *g) {
     g_match_info_free(p_info);
     g_regex_unref(p_re);
 
-    /* Fallback if no <p> was found but <a> exists */
+    /* Fallback if no links were found via <p> blocks but <a> exists */
     if (g->n_links == 0) {
         GMatchInfo *a_info2 = NULL;
         if (g_regex_match(a_re, html_text, 0, &a_info2)) {
             while (g_match_info_matches(a_info2) && g->n_links < DLPS_MAX_LINKS) {
                 char *href = g_match_info_fetch(a_info2, 1);
                 char *text = g_match_info_fetch(a_info2, 2);
-                if (href && text && strncmp(href, "http", 4) == 0 && !strstr(href, "guide-download")) {
+                if (href && text && strncmp(href, "http", 4) == 0 &&
+                    !strstr(href, "guide-download") && !strstr(href, "how-to")) {
                     char clean_text[128];
                     g_strlcpy(clean_text, text, sizeof(clean_text));
                     strip_html_tags(clean_text);
                     unescape_html(clean_text);
                     g_strstrip(clean_text);
-                    if (g_ascii_strcasecmp(clean_text, "here") != 0 &&
-                        g_ascii_strcasecmp(clean_text, "guide download") != 0) {
-                        g_strlcpy(g->links[g->n_links].name, clean_text[0] ? clean_text : "Download Link", sizeof(g->links[0].name));
-                        g_strlcpy(g->links[g->n_links].url, href, sizeof(g->links[0].url));
-                        g_strlcpy(g->links[g->n_links].hoster, clean_text, sizeof(g->links[0].hoster));
-                        g->links[g->n_links].type = detect_dlps_link_type(href);
-                        g->n_links++;
+                    if (g_ascii_strcasecmp(clean_text, "guide download") != 0 &&
+                        g_ascii_strcasecmp(clean_text, "tool download") != 0) {
+
+                        gboolean is_dup = FALSE;
+                        for (int l = 0; l < g->n_links; l++) {
+                            if (strcmp(g->links[l].url, href) == 0) {
+                                is_dup = TRUE;
+                                break;
+                            }
+                        }
+                        if (!is_dup) {
+                            const char *hoster = clean_text[0] ? clean_text : "Download Link";
+                            if (strstr(href, "downloadgameps3.net")) {
+                                hoster = (clean_text[0] && g_ascii_strcasecmp(clean_text, "here") != 0) ? clean_text : "DownloadGamePS3";
+                            } else if (strstr(href, "mediafire.com")) {
+                                hoster = "Mediafire";
+                            } else if (strstr(href, "1fichier.com")) {
+                                hoster = "1fichier";
+                            }
+
+                            char final_name[256];
+                            if (payload_tag[0]) {
+                                snprintf(final_name, sizeof(final_name), "%s [%s]", payload_tag, hoster);
+                            } else {
+                                snprintf(final_name, sizeof(final_name), "%s", hoster);
+                            }
+
+                            g_strlcpy(g->links[g->n_links].name, final_name, sizeof(g->links[0].name));
+                            g_strlcpy(g->links[g->n_links].url, href, sizeof(g->links[0].url));
+                            g_strlcpy(g->links[g->n_links].hoster, hoster, sizeof(g->links[0].hoster));
+                            g->links[g->n_links].type = detect_dlps_link_type(href);
+                            g->n_links++;
+                        }
                     }
                 }
                 g_free(href);
@@ -5346,6 +5410,12 @@ static void normalize_game_title(const char *in, char *out, size_t out_sz) {
 
 static void merge_dlps_game(DlpsGame *dest, const DlpsGame *src) {
     if (!dest || !src) return;
+
+    /* If dest only has a fallback post_url link and src has real links, clear fallback */
+    if (dest->n_links == 1 && dest->post_url[0] && strcmp(dest->links[0].url, dest->post_url) == 0 &&
+        src->n_links > 0 && strcmp(src->links[0].url, src->post_url) != 0) {
+        dest->n_links = 0;
+    }
 
     /* Merge unique links without duplicating identical URLs */
     for (int l = 0; l < src->n_links && dest->n_links < DLPS_MAX_LINKS; l++) {
@@ -5616,12 +5686,13 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 g_match_info_free(pl_info);
                 g_regex_unref(pl_re);
 
-                if (payload_count == 0) {
+                if (payload_count == 0 || g.n_links == 0) {
                     extract_dlps_region(NULL, html_content, &g);
                     extract_dlps_links(html_content, &g);
                     if (g.n_links == 0 && g.post_url[0]) {
                         strncpy(g.links[0].name, "Pagina DLPSGame", sizeof(g.links[0].name) - 1);
                         strncpy(g.links[0].url, g.post_url, sizeof(g.links[0].url) - 1);
+                        g.links[0].type = DLPS_LINK_HOSTER;
                         g.n_links = 1;
                     }
                 }
@@ -7064,7 +7135,7 @@ static void auto_session_next(AutoSession *sess) {
 
 static void on_dlps_auto_clicked(GtkButton *btn, gpointer user_data) {
     const DlpsGame *game = (const DlpsGame *)user_data;
-    GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(btn));
+    GtkRoot *root = (btn && GTK_IS_WIDGET(btn)) ? gtk_widget_get_root(GTK_WIDGET(btn)) : NULL;
     if (!game || game->n_links <= 0) {
         show_toast("Nessun link disponibile per questo gioco.");
         return;
