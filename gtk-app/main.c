@@ -194,6 +194,31 @@ static GtkWidget *g_list_box;
 static GtkWidget *g_lbl_stats;
 static GtkWidget *g_lbl_sub;
 static GtkWidget *g_stack;
+static GtkWidget *g_nav_downloads = NULL;
+static GtkWidget *g_nav_games     = NULL;
+static GtkWidget *g_nav_tools     = NULL;
+
+static void update_nav_active(const char *view_name) {
+    if (!g_nav_downloads || !g_nav_games || !g_nav_tools) return;
+
+    gtk_widget_remove_css_class(g_nav_downloads, "nav-active");
+    gtk_widget_remove_css_class(g_nav_games,     "nav-active");
+    gtk_widget_remove_css_class(g_nav_tools,     "nav-active");
+
+    if (view_name && g_strcmp0(view_name, "dlpsgame") == 0) {
+        gtk_widget_add_css_class(g_nav_games, "nav-active");
+    } else if (view_name && g_strcmp0(view_name, "catalog") == 0) {
+        gtk_widget_add_css_class(g_nav_tools, "nav-active");
+    } else {
+        gtk_widget_add_css_class(g_nav_downloads, "nav-active");
+    }
+}
+
+static void on_stack_page_changed(GObject *gobject, GParamSpec *pspec, gpointer user_data) {
+    (void)pspec; (void)user_data;
+    const char *name = gtk_stack_get_visible_child_name(GTK_STACK(gobject));
+    update_nav_active(name);
+}
 
 /* Riferimenti campi di input (validi mentre il relativo dialog è aperto) */
 static GtkWidget *g_entry_url;
@@ -7917,61 +7942,92 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_box_append(GTK_BOX(title_col), title_row);
     gtk_box_append(GTK_BOX(title_col), g_lbl_sub);
 
-    /* Spacer pushes the action buttons to the right edge. */
-    GtkWidget *spacer = gtk_label_new("");
-    gtk_widget_set_hexpand(spacer, TRUE);
+    gtk_box_append(GTK_BOX(header), title_col);
 
-    GtkWidget *btn_dlps = gtk_button_new_with_label("Sfoglia Giochi");
-    gtk_widget_add_css_class(btn_dlps, "btn-dlps");
-    gtk_widget_set_focusable(btn_dlps, FALSE);
-    gtk_widget_set_valign(btn_dlps, GTK_ALIGN_CENTER);
-    g_signal_connect(btn_dlps, "clicked", G_CALLBACK(on_dlps_clicked), NULL);
+    /* Spacer 1 (Left of navigation tabs) */
+    GtkWidget *spacer_left = gtk_label_new("");
+    gtk_widget_set_hexpand(spacer_left, TRUE);
+    gtk_box_append(GTK_BOX(header), spacer_left);
 
-    GtkWidget *btn_sources = gtk_button_new_with_label("Sorgenti");
-    gtk_widget_add_css_class(btn_sources, "btn-settings");
-    gtk_widget_set_focusable(btn_sources, FALSE);
-    gtk_widget_set_valign(btn_sources, GTK_ALIGN_CENTER);
-    g_signal_connect(btn_sources, "clicked", G_CALLBACK(on_sources_clicked), g_window);
+    /* ── Navigation Pill Switcher (Center) ── */
+    GtkWidget *nav_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 4);
+    gtk_widget_add_css_class(nav_box, "nav-switcher");
+    gtk_widget_set_valign(nav_box, GTK_ALIGN_CENTER);
 
-    GtkWidget *btn_catalog = gtk_button_new_with_label("Tools");
-    gtk_widget_add_css_class(btn_catalog, "btn-nav");
-    gtk_widget_set_focusable(btn_catalog, FALSE);
-    gtk_widget_set_valign(btn_catalog, GTK_ALIGN_CENTER);
-    g_signal_connect(btn_catalog, "clicked", G_CALLBACK(on_catalog_clicked), NULL);
+    g_nav_downloads = gtk_button_new_with_label("📥 Trasferimenti");
+    gtk_widget_add_css_class(g_nav_downloads, "nav-tab");
+    gtk_widget_add_css_class(g_nav_downloads, "nav-active");
+    gtk_widget_set_focusable(g_nav_downloads, FALSE);
+    gtk_widget_set_tooltip_text(g_nav_downloads, "Visualizza la lista dei trasferimenti attivi e completati");
+    g_signal_connect(g_nav_downloads, "clicked", G_CALLBACK(on_back_to_downloads_clicked), NULL);
 
-    GtkWidget *btn_settings = gtk_button_new_with_label("Settings");
-    gtk_widget_add_css_class(btn_settings, "btn-settings");
-    gtk_widget_set_focusable(btn_settings, FALSE);
-    gtk_widget_set_valign(btn_settings, GTK_ALIGN_CENTER);
-    g_signal_connect(btn_settings, "clicked",
-                     G_CALLBACK(on_settings_clicked), g_window);
+    g_nav_games = gtk_button_new_with_label("🎮 Giochi");
+    gtk_widget_add_css_class(g_nav_games, "nav-tab");
+    gtk_widget_set_focusable(g_nav_games, FALSE);
+    gtk_widget_set_tooltip_text(g_nav_games, "Sfoglia il catalogo giochi con ricerca e filtri");
+    g_signal_connect(g_nav_games, "clicked", G_CALLBACK(on_dlps_clicked), NULL);
 
-    GtkWidget *btn_arch = gtk_button_new_with_label("Split Archive");
-    gtk_widget_add_css_class(btn_arch, "btn-add");
+    g_nav_tools = gtk_button_new_with_label("🧰 Tools & Homebrew");
+    gtk_widget_add_css_class(g_nav_tools, "nav-tab");
+    gtk_widget_set_focusable(g_nav_tools, FALSE);
+    gtk_widget_set_tooltip_text(g_nav_tools, "Esplora e installa con 1 clic homebrew ed emulatori per console");
+    g_signal_connect(g_nav_tools, "clicked", G_CALLBACK(on_catalog_clicked), NULL);
+
+    gtk_box_append(GTK_BOX(nav_box), g_nav_downloads);
+    gtk_box_append(GTK_BOX(nav_box), g_nav_games);
+    gtk_box_append(GTK_BOX(nav_box), g_nav_tools);
+    gtk_box_append(GTK_BOX(header), nav_box);
+
+    /* Spacer 2 (Right of navigation tabs) */
+    GtkWidget *spacer_right = gtk_label_new("");
+    gtk_widget_set_hexpand(spacer_right, TRUE);
+    gtk_box_append(GTK_BOX(header), spacer_right);
+
+    /* ── Action & Configuration Buttons (Right) ── */
+    GtkWidget *actions_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_valign(actions_box, GTK_ALIGN_CENTER);
+
+    GtkWidget *btn_arch = gtk_button_new_with_label("📦 Archivio Diviso");
+    gtk_widget_add_css_class(btn_arch, "btn-secondary-action");
     gtk_widget_set_focusable(btn_arch, FALSE);
-    gtk_widget_set_valign(btn_arch, GTK_ALIGN_CENTER);
     gtk_widget_set_tooltip_text(btn_arch,
-        "Download a multi-part archive, extract locally with 7zip, and upload the .pkg via FTP");
+        "Scarica un archivio suddiviso (.part1.rar, .part2.rar...), estrae e invia automaticamente via FTP");
     g_signal_connect(btn_arch, "clicked", G_CALLBACK(on_arch_clicked), g_window);
 
-    GtkWidget *btn_add = gtk_button_new_with_label("New Download");
-    gtk_widget_add_css_class(btn_add, "btn-add");
+    GtkWidget *btn_add = gtk_button_new_with_label("+ Nuovo Download");
+    gtk_widget_add_css_class(btn_add, "btn-primary-add");
     gtk_widget_set_focusable(btn_add, FALSE);
-    gtk_widget_set_valign(btn_add, GTK_ALIGN_CENTER);
+    gtk_widget_set_tooltip_text(btn_add,
+        "Avvia un nuovo trasferimento diretto da URL o invia un file locale alla console");
     g_signal_connect(btn_add, "clicked", G_CALLBACK(on_add_clicked), g_window);
 
-    gtk_box_append(GTK_BOX(header), title_col);
-    gtk_box_append(GTK_BOX(header), spacer);
-    gtk_box_append(GTK_BOX(header), btn_dlps);
-    gtk_box_append(GTK_BOX(header), btn_catalog);
-    gtk_box_append(GTK_BOX(header), btn_sources);
-    gtk_box_append(GTK_BOX(header), btn_settings);
-    gtk_box_append(GTK_BOX(header), btn_arch);
-    gtk_box_append(GTK_BOX(header), btn_add);
+    GtkWidget *sep_actions = gtk_separator_new(GTK_ORIENTATION_VERTICAL);
+    gtk_widget_add_css_class(sep_actions, "header-sep");
+
+    GtkWidget *btn_sources = gtk_button_new_with_label("🌐 Sorgenti");
+    gtk_widget_add_css_class(btn_sources, "btn-utility");
+    gtk_widget_set_focusable(btn_sources, FALSE);
+    gtk_widget_set_tooltip_text(btn_sources, "Gestisci i feed e le sorgenti JSON del catalogo");
+    g_signal_connect(btn_sources, "clicked", G_CALLBACK(on_sources_clicked), g_window);
+
+    GtkWidget *btn_settings = gtk_button_new_with_label("⚙️ Impostazioni");
+    gtk_widget_add_css_class(btn_settings, "btn-utility");
+    gtk_widget_set_focusable(btn_settings, FALSE);
+    gtk_widget_set_tooltip_text(btn_settings, "Configura l'IP della console, porte FTP, Debrid e Risolutore");
+    g_signal_connect(btn_settings, "clicked", G_CALLBACK(on_settings_clicked), g_window);
+
+    gtk_box_append(GTK_BOX(actions_box), btn_arch);
+    gtk_box_append(GTK_BOX(actions_box), btn_add);
+    gtk_box_append(GTK_BOX(actions_box), sep_actions);
+    gtk_box_append(GTK_BOX(actions_box), btn_sources);
+    gtk_box_append(GTK_BOX(actions_box), btn_settings);
+
+    gtk_box_append(GTK_BOX(header), actions_box);
 
     /* ── Content stack: empty placeholder ↔ download list ↔ catalog ── */
     g_stack = gtk_stack_new();
     gtk_widget_set_vexpand(g_stack, TRUE);
+    g_signal_connect(g_stack, "notify::visible-child-name", G_CALLBACK(on_stack_page_changed), NULL);
 
     /* Empty state */
     GtkWidget *empty_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
