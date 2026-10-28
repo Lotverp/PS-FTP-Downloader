@@ -76,7 +76,6 @@ listview > row:hover {
     font-weight: 700;
     letter-spacing: 0.6px;
     color: #94a3b8;
-    cursor: pointer;
     transition: color 0.2s ease, opacity 0.2s ease;
 }
 
@@ -583,7 +582,6 @@ popover listview > row label selection {
     font-weight: 700;
     padding: 3px 12px;
     min-width: 66px;
-    text-align: center;
     border-radius: 20px;
     border: 1px solid;
 }
