@@ -4122,6 +4122,17 @@ static int parse_catalog_json(const char *json_data, gsize json_len, const char 
 
                     if (!urls_valid) continue;
 
+                    /* Deduplication in catalog: check if already exists */
+                    gboolean is_dup = FALSE;
+                    for (int k = 0; k < count; k++) {
+                        if (g_ascii_strcasecmp(out_items[k].name, it.name) == 0 ||
+                            g_ascii_strcasecmp(out_items[k].pkg_name, it.pkg_name) == 0) {
+                            is_dup = TRUE;
+                            break;
+                        }
+                    }
+                    if (is_dup) continue;
+
                     out_items[count++] = it;
                 }
             }
@@ -4979,7 +4990,7 @@ static void on_back_to_downloads_clicked(GtkButton *btn, gpointer user_data) {
  * Catalogo Giochi PS4 (DLPSGame: oltre 6.500 titoli e hoster)
  * ═══════════════════════════════════════════════════════════ */
 
-#define DLPS_MAX_LINKS 16
+#define DLPS_MAX_LINKS 48
 
 typedef enum {
     DLPS_LINK_UNKNOWN = 0,
@@ -5306,6 +5317,71 @@ static void extract_dlps_region(const char *decoded, const char *html_content, D
     }
 }
 
+static void normalize_game_title(const char *in, char *out, size_t out_sz) {
+    if (!in || !out || out_sz == 0) return;
+    out[0] = '\0';
+    size_t o = 0;
+    gboolean in_bracket = FALSE;
+    gboolean in_paren = FALSE;
+
+    for (const char *p = in; *p && o + 1 < out_sz; p++) {
+        if (*p == '[' || *p == '{') { in_bracket = TRUE; continue; }
+        if (*p == ']' || *p == '}') { in_bracket = FALSE; continue; }
+        if (*p == '(') { in_paren = TRUE; continue; }
+        if (*p == ')') { in_paren = FALSE; continue; }
+        if (in_bracket || in_paren) continue;
+
+        char c = g_ascii_tolower(*p);
+        if (g_ascii_isalnum(c)) {
+            out[o++] = c;
+        } else if (o > 0 && out[o - 1] != ' ') {
+            out[o++] = ' ';
+        }
+    }
+    while (o > 0 && out[o - 1] == ' ') o--;
+    out[o] = '\0';
+}
+
+static void merge_dlps_game(DlpsGame *dest, const DlpsGame *src) {
+    if (!dest || !src) return;
+
+    /* Merge unique links without duplicating identical URLs */
+    for (int l = 0; l < src->n_links && dest->n_links < DLPS_MAX_LINKS; l++) {
+        gboolean exists = FALSE;
+        for (int el = 0; el < dest->n_links; el++) {
+            if (strcmp(dest->links[el].url, src->links[l].url) == 0) {
+                exists = TRUE;
+                break;
+            }
+        }
+        if (!exists) {
+            dest->links[dest->n_links++] = src->links[l];
+        }
+    }
+
+    /* Merge region labels if missing */
+    if (!dest->region[0] && src->region[0]) {
+        g_strlcpy(dest->region, src->region, sizeof(dest->region));
+    } else if (src->region[0] && !strstr(dest->region, src->region)) {
+        if (strlen(dest->region) + strlen(src->region) + 3 < sizeof(dest->region)) {
+            g_strlcat(dest->region, ", ", sizeof(dest->region));
+            g_strlcat(dest->region, src->region, sizeof(dest->region));
+        }
+    }
+
+    /* Keep or update metadata */
+    if (!dest->password[0] && src->password[0])
+        g_strlcpy(dest->password, src->password, sizeof(dest->password));
+    if (!dest->cusa[0] && src->cusa[0])
+        g_strlcpy(dest->cusa, src->cusa, sizeof(dest->cusa));
+    if (!dest->cover_url[0] && src->cover_url[0])
+        g_strlcpy(dest->cover_url, src->cover_url, sizeof(dest->cover_url));
+    if (!dest->year[0] && src->year[0])
+        g_strlcpy(dest->year, src->year, sizeof(dest->year));
+    if (!dest->genre[0] && src->genre[0])
+        g_strlcpy(dest->genre, src->genre, sizeof(dest->genre));
+}
+
 static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame *out_games,
                                  int max_games, int region_filter, gboolean is_search,
                                  char *status_override, size_t status_override_size) {
@@ -5314,9 +5390,10 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
     JsonParser *parser = json_parser_new();
     GError *err = NULL;
     int count = 0;
+
     int max_cands = max_games * 4;
-    DlpsGame *all_candidates = calloc(max_cands, sizeof(DlpsGame));
-    int cand_count = 0;
+    DlpsGame *fallback_candidates = calloc(max_cands, sizeof(DlpsGame));
+    int fallback_count = 0;
 
     if (json_parser_load_from_data(parser, json_data, json_len, &err)) {
         JsonNode *root = json_parser_get_root(parser);
@@ -5332,7 +5409,7 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
 
         if (arr) {
             guint len = json_array_get_length(arr);
-            for (guint i = 0; i < len && cand_count < max_cands; i++) {
+            for (guint i = 0; i < len; i++) {
                 JsonNode *node = json_array_get_element(arr, i);
                 if (!JSON_NODE_HOLDS_OBJECT(node)) continue;
                 JsonObject *obj = json_node_get_object(node);
@@ -5394,10 +5471,16 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                     }
                 }
 
-                /* 2. Extract Title ID (PS5 PPSA, PS4 CUSA, PS3/PSP NPUB/BLES etc.) */
+                /* 2. Extract CUSA/PPSA and platform from title or HTML */
                 GRegex *cusa_re = g_regex_new("(CUSA|PPSA|NPUB|NPEB|BLUS|BLES|NPUA|NPHA|ULUS|ULES|UCUS)\\d{5}", G_REGEX_CASELESS, 0, NULL);
                 GMatchInfo *minfo = NULL;
-                if (g_regex_match(cusa_re, html_content, 0, &minfo)) {
+                if (g_regex_match(cusa_re, g.title, 0, &minfo)) {
+                    char *c = g_match_info_fetch(minfo, 0);
+                    if (c) {
+                        strncpy(g.cusa, c, sizeof(g.cusa) - 1);
+                        g_free(c);
+                    }
+                } else if (g_regex_match(cusa_re, html_content, 0, &minfo)) {
                     char *c = g_match_info_fetch(minfo, 0);
                     if (c) {
                         strncpy(g.cusa, c, sizeof(g.cusa) - 1);
@@ -5407,45 +5490,14 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 g_match_info_free(minfo);
                 g_regex_unref(cusa_re);
 
-                /* Rilevamento piattaforma console da categorie WP, Title ID o titolo */
-                if (json_object_has_member(obj, "categories")) {
-                    JsonArray *cats = json_object_get_array_member(obj, "categories");
-                    guint clen = json_array_get_length(cats);
-                    for (guint cidx = 0; cidx < clen; cidx++) {
-                        gint64 cid = json_array_get_int_element(cats, cidx);
-                        if (cid == 63019) { strncpy(g.platform, "PS5", sizeof(g.platform) - 1); break; }
-                        else if (cid == 4370) { strncpy(g.platform, "PS4", sizeof(g.platform) - 1); break; }
-                        else if (cid == 64) { strncpy(g.platform, "PS3", sizeof(g.platform) - 1); break; }
-                        else if (cid == 5917) { strncpy(g.platform, "PS2", sizeof(g.platform) - 1); break; }
-                        else if (cid == 110) { strncpy(g.platform, "PSN", sizeof(g.platform) - 1); break; }
-                        else if (cid == 63) { strncpy(g.platform, "PSP", sizeof(g.platform) - 1); break; }
-                        else if (cid == 2297) { strncpy(g.platform, "PS Vita", sizeof(g.platform) - 1); break; }
-                    }
-                }
-                if (!g.platform[0]) {
-                    if (strncmp(g.cusa, "PPSA", 4) == 0) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
-                    else if (strncmp(g.cusa, "CUSA", 4) == 0) strncpy(g.platform, "PS4", sizeof(g.platform) - 1);
-                    else if (strncmp(g.cusa, "BLUS", 4) == 0 || strncmp(g.cusa, "BLES", 4) == 0 ||
-                             strncmp(g.cusa, "NPUB", 4) == 0 || strncmp(g.cusa, "NPEB", 4) == 0)
-                        strncpy(g.platform, "PS3", sizeof(g.platform) - 1);
-                    else if (strncmp(g.cusa, "SLUS", 4) == 0 || strncmp(g.cusa, "SLES", 4) == 0 ||
-                             strncmp(g.cusa, "SCES", 4) == 0)
-                        strncpy(g.platform, "PS2", sizeof(g.platform) - 1);
-                    else if (strncmp(g.cusa, "ULUS", 4) == 0 || strncmp(g.cusa, "ULES", 4) == 0 ||
-                             strncmp(g.cusa, "UCUS", 4) == 0)
-                        strncpy(g.platform, "PSP", sizeof(g.platform) - 1);
-                    else if (strncmp(g.cusa, "PCSF", 4) == 0 || strncmp(g.cusa, "PCSB", 4) == 0 ||
-                             strncmp(g.cusa, "PCSE", 4) == 0)
-                        strncpy(g.platform, "PS Vita", sizeof(g.platform) - 1);
-                    else if (strstr(g.post_url, "downloadgamepsp.org")) {
-                        strncpy(g.platform, strstr(g.post_url, "psvita") ? "PS Vita" : "PSP", sizeof(g.platform) - 1);
-                    } else if (strstr(g.post_url, "nswgame.com") || strstr(g.post_url, "nswgf.com")) {
-                        strncpy(g.platform, "Switch", sizeof(g.platform) - 1);
-                    } else if (strstr(g.post_url, "dlxbgame.com")) {
-                        strncpy(g.platform, "Xbox", sizeof(g.platform) - 1);
-                    } else if (strstr(g.post_url, "gamepciso.com")) {
-                        strncpy(g.platform, "PC", sizeof(g.platform) - 1);
-                    } else if (strstr(g.title, "PS5") || strstr(html_content, "PS5")) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
+                if (strncmp(g.cusa, "PPSA", 4) == 0) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
+                else if (strncmp(g.cusa, "CUSA", 4) == 0) strncpy(g.platform, "PS4", sizeof(g.platform) - 1);
+                else if (strncmp(g.cusa, "BLUS", 4) == 0 || strncmp(g.cusa, "BLES", 4) == 0 ||
+                         strncmp(g.cusa, "NPUB", 4) == 0 || strncmp(g.cusa, "NPEB", 4) == 0) strncpy(g.platform, "PS3", sizeof(g.platform) - 1);
+                else if (strncmp(g.cusa, "ULUS", 4) == 0 || strncmp(g.cusa, "ULES", 4) == 0 ||
+                         strncmp(g.cusa, "UCUS", 4) == 0) strncpy(g.platform, "PSP", sizeof(g.platform) - 1);
+                else {
+                    if (strstr(g.title, "PS5") || strstr(html_content, "PS5")) strncpy(g.platform, "PS5", sizeof(g.platform) - 1);
                     else if (strstr(g.title, "PS4") || strstr(html_content, "PS4")) strncpy(g.platform, "PS4", sizeof(g.platform) - 1);
                     else if (strstr(g.title, "PS3") || strstr(html_content, "PS3")) strncpy(g.platform, "PS3", sizeof(g.platform) - 1);
                     else if (strstr(g.title, "PS2") || strstr(html_content, "PS2")) strncpy(g.platform, "PS2", sizeof(g.platform) - 1);
@@ -5477,59 +5529,85 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 g_match_info_free(minfo);
                 g_regex_unref(year_re);
 
-                /* 4. Extract data-payload base64 (may contain multiple regions, e.g. USA + EUR) */
+                /* 4. Extract data-payload base64 blocks into g */
                 GRegex *pl_re = g_regex_new("data-payload=[\"']([^\"']+)[\"']", 0, 0, NULL);
                 GMatchInfo *pl_info = NULL;
                 int payload_count = 0;
-                DlpsGame payload_games[4];
-                memset(payload_games, 0, sizeof(payload_games));
 
                 if (g_regex_match(pl_re, html_content, 0, &pl_info)) {
-                    while (g_match_info_matches(pl_info) && payload_count < 4) {
+                    while (g_match_info_matches(pl_info) && payload_count < 8) {
                         char *b64 = g_match_info_fetch(pl_info, 1);
                         if (b64) {
                             gsize out_len = 0;
                             guchar *raw = g_base64_decode(b64, &out_len);
                             if (raw) {
                                 char *decoded = g_strndup((char *)raw, out_len);
-                                DlpsGame pg = g; /* copy common post metadata */
 
-                                /* Find password (handles Password, Pasword, etc.) */
-                                GRegex *pwd_re = g_regex_new("Pass?w(?:or|0r)d?\\s*:\\s*([^\\s<]+)", G_REGEX_CASELESS, 0, NULL);
-                                GMatchInfo *pwd_info = NULL;
-                                if (g_regex_match(pwd_re, decoded, 0, &pwd_info)) {
-                                    char *p = g_match_info_fetch(pwd_info, 1);
-                                    if (p) {
-                                        strncpy(pg.password, g_strstrip(p), sizeof(pg.password) - 1);
-                                        g_free(p);
+                                /* Region for this payload */
+                                DlpsGame temp_reg;
+                                memset(&temp_reg, 0, sizeof(temp_reg));
+                                extract_dlps_region(decoded, html_content, &temp_reg);
+
+                                if (!g.region[0] && temp_reg.region[0]) {
+                                    g_strlcpy(g.region, temp_reg.region, sizeof(g.region));
+                                } else if (temp_reg.region[0] && !strstr(g.region, temp_reg.region)) {
+                                    if (strlen(g.region) + strlen(temp_reg.region) + 3 < sizeof(g.region)) {
+                                        g_strlcat(g.region, ", ", sizeof(g.region));
+                                        g_strlcat(g.region, temp_reg.region, sizeof(g.region));
                                     }
                                 }
-                                g_match_info_free(pwd_info);
-                                g_regex_unref(pwd_re);
 
-                                /* Title ID from this payload */
-                                GRegex *cusa_re2 = g_regex_new("(CUSA|PPSA|NPUB|NPEB|BLUS|BLES|NPUA|NPHA|ULUS|ULES|UCUS)\\d{5}", G_REGEX_CASELESS, 0, NULL);
-                                GMatchInfo *cusa_info2 = NULL;
-                                if (g_regex_match(cusa_re2, decoded, 0, &cusa_info2)) {
-                                    char *c = g_match_info_fetch(cusa_info2, 0);
-                                    if (c) {
-                                        strncpy(pg.cusa, c, sizeof(pg.cusa) - 1);
-                                        g_free(c);
+                                /* Password */
+                                if (!g.password[0]) {
+                                    GRegex *pwd_re = g_regex_new("Pass?w(?:or|0r)d?\\s*:\\s*([^\\s<]+)", G_REGEX_CASELESS, 0, NULL);
+                                    GMatchInfo *pwd_info = NULL;
+                                    if (g_regex_match(pwd_re, decoded, 0, &pwd_info)) {
+                                        char *p = g_match_info_fetch(pwd_info, 1);
+                                        if (p) {
+                                            strncpy(g.password, g_strstrip(p), sizeof(g.password) - 1);
+                                            g_free(p);
+                                        }
+                                    }
+                                    g_match_info_free(pwd_info);
+                                    g_regex_unref(pwd_re);
+                                }
+
+                                /* Title ID */
+                                if (!g.cusa[0]) {
+                                    GRegex *cusa_re2 = g_regex_new("(CUSA|PPSA|NPUB|NPEB|BLUS|BLES|NPUA|NPHA|ULUS|ULES|UCUS)\\d{5}", G_REGEX_CASELESS, 0, NULL);
+                                    GMatchInfo *cusa_info2 = NULL;
+                                    if (g_regex_match(cusa_re2, decoded, 0, &cusa_info2)) {
+                                        char *c = g_match_info_fetch(cusa_info2, 0);
+                                        if (c) {
+                                            strncpy(g.cusa, c, sizeof(g.cusa) - 1);
+                                            g_free(c);
+                                        }
+                                    }
+                                    g_match_info_free(cusa_info2);
+                                    g_regex_unref(cusa_re2);
+                                }
+
+                                /* Links */
+                                int before_n = g.n_links;
+                                extract_dlps_links(decoded, &g);
+
+                                /* Tag newly added links with region if known and not present */
+                                if (temp_reg.region[0]) {
+                                    for (int l = before_n; l < g.n_links; l++) {
+                                        if (!strstr(g.links[l].name, temp_reg.region)) {
+                                            char tagged[256];
+                                            snprintf(tagged, sizeof(tagged), "[%s] %s", temp_reg.region, g.links[l].name);
+                                            g_strlcpy(g.links[l].name, tagged, sizeof(g.links[l].name));
+                                        }
                                     }
                                 }
-                                g_match_info_free(cusa_info2);
-                                g_regex_unref(cusa_re2);
-
-                                extract_dlps_region(decoded, html_content, &pg);
-                                extract_dlps_links(decoded, &pg);
-
-                                payload_games[payload_count++] = pg;
 
                                 g_free(decoded);
                                 g_free(raw);
                             }
                             g_free(b64);
                         }
+                        payload_count++;
                         g_match_info_next(pl_info, NULL);
                     }
                 }
@@ -5537,18 +5615,61 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
                 g_regex_unref(pl_re);
 
                 if (payload_count == 0) {
-                    DlpsGame pg = g;
-                    extract_dlps_region(NULL, html_content, &pg);
-                    if (pg.n_links == 0 && pg.post_url[0]) {
-                        strncpy(pg.links[0].name, "Pagina DLPSGame", sizeof(pg.links[0].name) - 1);
-                        strncpy(pg.links[0].url, pg.post_url, sizeof(pg.links[0].url) - 1);
-                        pg.n_links = 1;
+                    extract_dlps_region(NULL, html_content, &g);
+                    extract_dlps_links(html_content, &g);
+                    if (g.n_links == 0 && g.post_url[0]) {
+                        strncpy(g.links[0].name, "Pagina DLPSGame", sizeof(g.links[0].name) - 1);
+                        strncpy(g.links[0].url, g.post_url, sizeof(g.links[0].url) - 1);
+                        g.n_links = 1;
                     }
-                    payload_games[payload_count++] = pg;
                 }
 
-                for (int p_idx = 0; p_idx < payload_count && cand_count < max_cands; p_idx++) {
-                    all_candidates[cand_count++] = payload_games[p_idx];
+                /* Region filter check */
+                gboolean match_region = TRUE;
+                if (region_filter > 0) {
+                    match_region = FALSE;
+                    if (region_filter == 1 && (strstr(g.region, "EUR") != NULL || strstr(g.region, "EUROPE") != NULL)) {
+                        match_region = TRUE;
+                    } else if (region_filter == 2 && (strstr(g.region, "USA") != NULL || strstr(g.region, "AMERICA") != NULL)) {
+                        match_region = TRUE;
+                    } else if (region_filter == 3 && (strstr(g.region, "JPN") != NULL || strstr(g.region, "JAPAN") != NULL || strstr(g.region, "ASIA") != NULL)) {
+                        match_region = TRUE;
+                    }
+                }
+
+                if (!match_region) {
+                    if (fallback_count < max_cands) {
+                        fallback_candidates[fallback_count++] = g;
+                    }
+                    continue;
+                }
+
+                /* Deduplication: find if this game is already in out_games */
+                int existing_idx = -1;
+                char norm_new[256];
+                normalize_game_title(g.title, norm_new, sizeof(norm_new));
+
+                for (int k = 0; k < count; k++) {
+                    if (g.id > 0 && out_games[k].id == g.id) {
+                        existing_idx = k;
+                        break;
+                    }
+                    if (g.post_url[0] && strcmp(out_games[k].post_url, g.post_url) == 0) {
+                        existing_idx = k;
+                        break;
+                    }
+                    char norm_existing[256];
+                    normalize_game_title(out_games[k].title, norm_existing, sizeof(norm_existing));
+                    if (norm_new[0] && norm_existing[0] && strcmp(norm_new, norm_existing) == 0) {
+                        existing_idx = k;
+                        break;
+                    }
+                }
+
+                if (existing_idx >= 0) {
+                    merge_dlps_game(&out_games[existing_idx], &g);
+                } else if (count < max_games) {
+                    out_games[count++] = g;
                 }
             }
             if (free_arr) json_array_unref(arr);
@@ -5558,53 +5679,27 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
     }
     g_object_unref(parser);
 
-    /* Pass 1: Filter by region_filter */
-    if (region_filter > 0) {
-        for (int i = 0; i < cand_count && count < max_games; i++) {
-            DlpsGame *pg = &all_candidates[i];
-            gboolean match = FALSE;
-            if (region_filter == 1 && (strcmp(pg->region, "EUR") == 0 || strcmp(pg->region, "EUROPE") == 0)) {
-                match = TRUE;
-            } else if (region_filter == 2 && (strcmp(pg->region, "USA") == 0 || strcmp(pg->region, "AMERICA") == 0)) {
-                match = TRUE;
-            } else if (region_filter == 3 && (strcmp(pg->region, "JPN") == 0 || strcmp(pg->region, "JAPAN") == 0 || strcmp(pg->region, "ASIA") == 0)) {
-                match = TRUE;
-            }
+    /* Fallback if user searched specifically and no games matched region_filter */
+    if (count == 0 && fallback_count > 0 && is_search) {
+        for (int i = 0; i < fallback_count && count < max_games; i++) {
+            DlpsGame *pg = &fallback_candidates[i];
 
-            if (match) {
-                if (pg->region[0] && !strstr(pg->title, pg->region)) {
-                    char clarified[256];
-                    snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
-                    g_strlcpy(pg->title, clarified, sizeof(pg->title));
+            int existing_idx = -1;
+            char norm_new[256];
+            normalize_game_title(pg->title, norm_new, sizeof(norm_new));
+            for (int k = 0; k < count; k++) {
+                if (pg->id > 0 && out_games[k].id == pg->id) { existing_idx = k; break; }
+                char norm_existing[256];
+                normalize_game_title(out_games[k].title, norm_existing, sizeof(norm_existing));
+                if (norm_new[0] && norm_existing[0] && strcmp(norm_new, norm_existing) == 0) {
+                    existing_idx = k; break;
                 }
+            }
+            if (existing_idx >= 0) {
+                merge_dlps_game(&out_games[existing_idx], pg);
+            } else {
                 out_games[count++] = *pg;
             }
-        }
-    } else {
-        for (int i = 0; i < cand_count && count < max_games; i++) {
-            DlpsGame *pg = &all_candidates[i];
-            if (pg->region[0] && !strstr(pg->title, pg->region)) {
-                char clarified[256];
-                snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
-                g_strlcpy(pg->title, clarified, sizeof(pg->title));
-            }
-            out_games[count++] = *pg;
-        }
-    }
-
-    /* Fallback: se l'utente ha eseguito una ricerca specifica e nessun gioco corrisponde
-     * al filtro regione selezionato, ma esistono risultati per altre regioni:
-     * mostra comunque i giochi disponibili indicando la regione trovata.
-     */
-    if (count == 0 && cand_count > 0 && is_search) {
-        for (int i = 0; i < cand_count && count < max_games; i++) {
-            DlpsGame *pg = &all_candidates[i];
-            if (pg->region[0] && !strstr(pg->title, pg->region)) {
-                char clarified[256];
-                snprintf(clarified, sizeof(clarified), "%.230s [%s]", pg->title, pg->region);
-                g_strlcpy(pg->title, clarified, sizeof(pg->title));
-            }
-            out_games[count++] = *pg;
         }
         if (status_override && status_override_size > 0 && count > 0) {
             snprintf(status_override, status_override_size,
@@ -5613,7 +5708,7 @@ static int parse_dlps_games_json(const char *json_data, gsize json_len, DlpsGame
         }
     }
 
-    free(all_candidates);
+    free(fallback_candidates);
     return count;
 }
 
