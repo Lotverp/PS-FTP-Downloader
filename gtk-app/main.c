@@ -1,5 +1,5 @@
 /*
- * PS FTP Downloader — GTK4 + libcurl
+ * P2C Downloader — GTK4 + libcurl
  *
  * Trasferisce file direttamente da qualsiasi URL HTTP(S) a una console PlayStation via FTP,
  * sfruttando un ring-buffer circolare in RAM protetto da lock — zero utilizzo di disco locale.
@@ -38,9 +38,9 @@
  * Costanti globali di configurazione
  * ═══════════════════════════════════════════════════════════ */
 
-#define APP_ID           "io.psftpdownloader.app"
+#define APP_ID           "io.p2cdownloader.app"
 #define APP_VERSION      "1.3.5"
-#define APP_GITHUB_URL   "https://github.com/Lotverp/PS-FTP-Downloader"
+#define APP_GITHUB_URL   "https://github.com/Lotverp/P2C-Downloader"
 
 #define FTP_HOST_DEFAULT "192.168.1.195"
 #define FTP_PORT_DEFAULT  2121
@@ -1002,9 +1002,21 @@ static void build_ftp_url(char *out, size_t out_sz,
 
 static char *get_config_path(void) {
     const char *config_dir = g_get_user_config_dir();
-    char *dir = g_build_filename(config_dir, "ps-ftp-downloader", NULL);
-    g_mkdir_with_parents(dir, 0755);
+    char *dir = g_build_filename(config_dir, "p2c-downloader", NULL);
     char *file = g_build_filename(dir, "settings.ini", NULL);
+    if (!g_file_test(file, G_FILE_TEST_EXISTS)) {
+        char *old_file = g_build_filename(config_dir, "ps-ftp-downloader", "settings.ini", NULL);
+        if (g_file_test(old_file, G_FILE_TEST_EXISTS)) {
+            g_mkdir_with_parents(dir, 0755);
+            GFile *src = g_file_new_for_path(old_file);
+            GFile *dst = g_file_new_for_path(file);
+            g_file_copy(src, dst, G_FILE_COPY_NONE, NULL, NULL, NULL, NULL);
+            g_object_unref(src);
+            g_object_unref(dst);
+        }
+        g_free(old_file);
+    }
+    g_mkdir_with_parents(dir, 0755);
     g_free(dir);
     return file;
 }
@@ -1070,18 +1082,22 @@ static void load_settings(void) {
             g_n_sources = 0;
             for (gsize i = 0; i < n_src && g_n_sources < 8; i++) {
                 if (src_list[i] && src_list[i][0]) {
-                    strncpy(g_catalog_sources[g_n_sources++], src_list[i], sizeof(g_catalog_sources[0]) - 1);
+                    if (strcmp(src_list[i], "https://raw.githubusercontent.com/Lotverp/PS-FTP-Downloader/main/catalog.json") == 0) {
+                        strncpy(g_catalog_sources[g_n_sources++], "https://raw.githubusercontent.com/Lotverp/P2C-Downloader/main/catalog.json", sizeof(g_catalog_sources[0]) - 1);
+                    } else {
+                        strncpy(g_catalog_sources[g_n_sources++], src_list[i], sizeof(g_catalog_sources[0]) - 1);
+                    }
                 }
             }
             g_strfreev(src_list);
         }
         if (g_n_sources == 0) {
-            strncpy(g_catalog_sources[0], "https://raw.githubusercontent.com/Lotverp/PS-FTP-Downloader/main/catalog.json", sizeof(g_catalog_sources[0]) - 1);
+            strncpy(g_catalog_sources[0], "https://raw.githubusercontent.com/Lotverp/P2C-Downloader/main/catalog.json", sizeof(g_catalog_sources[0]) - 1);
             g_n_sources = 1;
         }
     } else {
         if (g_n_sources == 0) {
-            strncpy(g_catalog_sources[0], "https://raw.githubusercontent.com/Lotverp/PS-FTP-Downloader/main/catalog.json", sizeof(g_catalog_sources[0]) - 1);
+            strncpy(g_catalog_sources[0], "https://raw.githubusercontent.com/Lotverp/P2C-Downloader/main/catalog.json", sizeof(g_catalog_sources[0]) - 1);
             g_n_sources = 1;
         }
         save_settings();
@@ -1257,7 +1273,7 @@ static void on_test_clicked(GtkButton *btn, gpointer user_data) {
     const char *pass = gtk_editable_get_text(GTK_EDITABLE(g_set_pass));
 
     gtk_widget_set_sensitive(GTK_WIDGET(btn), FALSE);
-    gtk_label_set_text(GTK_LABEL(lbl_result), "Connessione in corso a PS FTP...");
+    gtk_label_set_text(GTK_LABEL(lbl_result), "Connessione in corso a Console FTP...");
     gtk_widget_remove_css_class(lbl_result, "success-label");
     gtk_widget_remove_css_class(lbl_result, "error-label");
 
@@ -1481,9 +1497,11 @@ static void *download_thread_fn(void *arg) {
  *
  * Ricerca style.css in ordine di priorità:
  *   1. Directory dell'eseguibile avviato (sviluppo / versione portabile)
- *   2. /usr/share/ps-ftp-downloader/        (pacchetto .deb di sistema)
- *   3. /usr/local/share/ps-ftp-downloader/  (installazione manuale)
- *   4. Directory corrente "style.css"
+ *   2. /usr/share/p2c-downloader/           (pacchetto .deb di sistema)
+ *   3. /usr/local/share/p2c-downloader/     (installazione manuale)
+ *   4. /usr/share/ps-ftp-downloader/        (fallback legacy)
+ *   5. /usr/local/share/ps-ftp-downloader/  (fallback legacy)
+ *   6. Directory corrente "style.css"
  * ═══════════════════════════════════════════════════════════ */
 
 static void load_css(void) {
@@ -1503,6 +1521,8 @@ static void load_css(void) {
 
     const char *candidates[] = {
         exe_dir_css[0] ? exe_dir_css : NULL,
+        "/usr/share/p2c-downloader/style.css",
+        "/usr/local/share/p2c-downloader/style.css",
         "/usr/share/ps-ftp-downloader/style.css",
         "/usr/local/share/ps-ftp-downloader/style.css",
         "style.css",
@@ -2086,7 +2106,7 @@ static void *split_archive_thread_fn_internal(void *arg) {
      * ──────────────────────────────────────────────────────── */
     const char *base_cache_dir = g_tmp_dir[0] ? g_tmp_dir : g_get_user_cache_dir();
     char base_dir[512];
-    snprintf(base_dir, sizeof(base_dir), "%.480s/ps-ftp-arch", base_cache_dir);
+    snprintf(base_dir, sizeof(base_dir), "%.480s/p2c-arch", base_cache_dir);
     
     if (mkdir(base_dir, 0755) != 0 && errno != EEXIST) {
         snprintf(dl->error_msg, sizeof(dl->error_msg),
@@ -2786,7 +2806,7 @@ static Download *start_single_download(const char *url,
         for (char *p = safe; *p; p++)
             if (*p == '/' || *p == ' ' || *p == '\'' || *p == '"') *p = '_';
         snprintf(sa->tmp_dir, sizeof(sa->tmp_dir),
-                 "%.400s/ps-ftp-arch/%ld-%.64s", base_cache_dir, (long)time(NULL), safe);
+                 "%.400s/p2c-arch/%ld-%.64s", base_cache_dir, (long)time(NULL), safe);
 
         pthread_create(&dl->thread, NULL, split_archive_thread_fn, sa);
     } else {
@@ -2834,7 +2854,7 @@ static Download *start_split_download(const char **urls, int n,
     for (char *p = safe; *p; p++)
         if (*p == '/' || *p == ' ' || *p == '\'' || *p == '"') *p = '_';
     snprintf(sa->tmp_dir, sizeof(sa->tmp_dir),
-             "%.400s/ps-ftp-arch/%ld-%.64s", base_cache_dir, (long)time(NULL), safe);
+             "%.400s/p2c-arch/%ld-%.64s", base_cache_dir, (long)time(NULL), safe);
 
     pthread_mutex_lock(&dl_mutex);
     if (n_downloads >= MAX_DOWNLOADS) {
@@ -3167,6 +3187,11 @@ static const char *get_python_binary(void) {
 
     const char *data_dir = g_get_user_data_dir();
     char venv_py[512];
+    snprintf(venv_py, sizeof(venv_py), "%s/p2c-downloader/venv/bin/python3", data_dir);
+    if (access(venv_py, X_OK) == 0) {
+        g_strlcpy(py_path, venv_py, sizeof(py_path));
+        return py_path;
+    }
     snprintf(venv_py, sizeof(venv_py), "%s/ps-ftp-downloader/venv/bin/python3", data_dir);
     if (access(venv_py, X_OK) == 0) {
         g_strlcpy(py_path, venv_py, sizeof(py_path));
@@ -3194,6 +3219,9 @@ static const char *get_uc_resolver_path(void) {
         snprintf(path, sizeof(path), "%s/uc_resolver.py", exe_dir);
         if (access(path, R_OK) == 0) return path;
     }
+
+    snprintf(path, sizeof(path), "/usr/share/p2c-downloader/uc_resolver.py");
+    if (access(path, R_OK) == 0) return path;
 
     snprintf(path, sizeof(path), "/usr/share/ps-ftp-downloader/uc_resolver.py");
     if (access(path, R_OK) == 0) return path;
@@ -3269,6 +3297,9 @@ static void on_setup_uc_clicked(GtkButton *btn, gpointer user_data) {
         char *slash = strrchr(exe_dir, '/');
         if (slash) *slash = '\0';
         snprintf(setup_script, sizeof(setup_script), "%s/setup-bot-resolver.sh", exe_dir);
+    }
+    if (access(setup_script, X_OK) != 0) {
+        snprintf(setup_script, sizeof(setup_script), "/usr/share/p2c-downloader/setup-bot-resolver.sh");
     }
     if (access(setup_script, X_OK) != 0) {
         snprintf(setup_script, sizeof(setup_script), "/usr/share/ps-ftp-downloader/setup-bot-resolver.sh");
@@ -3854,7 +3885,7 @@ static gboolean is_valid_pkg_name(const char *name) {
 
 static char *get_catalog_cache_path(const char *source_url) {
     const char *cache_dir = g_get_user_cache_dir();
-    char *dir = g_build_filename(cache_dir, "ps-ftp-downloader", NULL);
+    char *dir = g_build_filename(cache_dir, "p2c-downloader", NULL);
     g_mkdir_with_parents(dir, 0755);
     guint h = g_str_hash(source_url);
     char fname[64];
@@ -4089,6 +4120,8 @@ static void *catalog_fetch_thread_fn(void *arg) {
         static const char *LOCAL_CATALOGS[] = {
             "catalog.json",
             "../catalog.json",
+            "/usr/share/p2c-downloader/catalog.json",
+            "/usr/share/p2c-downloader/catalog.json.example",
             "/usr/share/ps-ftp-downloader/catalog.json",
             "/usr/share/ps-ftp-downloader/catalog.json.example",
             NULL
@@ -4204,7 +4237,7 @@ static void *icon_loader_thread(void *arg) {
 static void load_icon_async(const char *url, GtkWidget *img, int target_w, int target_h) {
     if (!url || !url[0] || !is_valid_feed_url(url)) return;
     const char *cache_dir = g_get_user_cache_dir();
-    char *dir = g_build_filename(cache_dir, "ps-ftp-downloader", "icons", NULL);
+    char *dir = g_build_filename(cache_dir, "p2c-downloader", "icons", NULL);
     g_mkdir_with_parents(dir, 0755);
     guint h = g_str_hash(url);
     char fname[64];
@@ -7712,7 +7745,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     trigger_catalog_fetch_async();
 
     g_window = gtk_application_window_new(app);
-    gtk_window_set_title(GTK_WINDOW(g_window), "PS FTP Downloader");
+    gtk_window_set_title(GTK_WINDOW(g_window), "P2C Downloader");
     gtk_window_set_default_size(GTK_WINDOW(g_window), 860, 640);
 
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -7729,6 +7762,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     /* GitHub icon button — resolves path at runtime (dev vs installed). */
     static const char *GITHUB_ICON_PATHS[] = {
         "github-mark.svg",
+        "/usr/share/p2c-downloader/github-mark.svg",
         "/usr/share/ps-ftp-downloader/github-mark.svg",
         NULL
     };
@@ -7753,7 +7787,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_tooltip_text(btn_github, "View on GitHub");
     g_signal_connect(btn_github, "clicked", G_CALLBACK(on_github_clicked), NULL);
 
-    GtkWidget *lbl_title = gtk_label_new("PS FTP Downloader");
+    GtkWidget *lbl_title = gtk_label_new("P2C Downloader");
     gtk_widget_add_css_class(lbl_title, "app-title");
     gtk_label_set_xalign(GTK_LABEL(lbl_title), 0.0);
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PS FTP Downloader — Undetected ChromeDriver Resolver
+P2C Downloader — Undetected ChromeDriver Resolver
 Resolves protected download links (Cloudflare, link shorteners, protectors)
 and extracts direct download URLs with authenticated browser session headers/cookies.
 """
@@ -797,7 +797,7 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
                 pass
 
 def main():
-    parser = argparse.ArgumentParser(description="PS-FTP-Downloader UC Bot Resolver")
+    parser = argparse.ArgumentParser(description="P2C Downloader UC Bot Resolver")
     parser.add_argument("url", nargs="?", help="Target protected URL to resolve")
     parser.add_argument("--password", "-p", help="Optional password for protected links")
     parser.add_argument("--timeout", "-t", type=int, default=45, help="Timeout in seconds")

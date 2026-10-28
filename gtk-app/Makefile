@@ -1,5 +1,5 @@
 CC      = gcc
-TARGET  = ps-ftp-downloader
+TARGET  = p2c-downloader
 SRC     = main.c
 
 PKG_DEPS   = gtk4 libcurl json-glib-1.0 gdk-pixbuf-2.0
@@ -34,9 +34,9 @@ install: all
 	install -Dm644 style.css                    $(DESTDIR)$(DATADIR)/style.css
 	install -Dm755 uc_resolver.py               $(DESTDIR)$(DATADIR)/uc_resolver.py
 	install -Dm755 setup-bot-resolver.sh        $(DESTDIR)$(DATADIR)/setup-bot-resolver.sh
-	install -Dm644 ps-ftp-downloader.desktop    $(DESTDIR)$(APPDIR)/ps-ftp-downloader.desktop
-	if [ -f "ps-ftp-downloader.png" ]; then \
-	    install -Dm644 ps-ftp-downloader.png    $(DESTDIR)$(PIXMAPSDIR)/ps-ftp-downloader.png; \
+	install -Dm644 p2c-downloader.desktop       $(DESTDIR)$(APPDIR)/p2c-downloader.desktop
+	if [ -f "p2c-downloader.png" ]; then \
+	    install -Dm644 p2c-downloader.png       $(DESTDIR)$(PIXMAPSDIR)/p2c-downloader.png; \
 	fi
 	@command -v update-desktop-database >/dev/null 2>&1 && \
 	    update-desktop-database $(DESTDIR)$(APPDIR) || true
@@ -45,8 +45,8 @@ install: all
 uninstall:
 	rm -f $(DESTDIR)$(BINDIR)/$(TARGET)
 	rm -rf $(DESTDIR)$(DATADIR)
-	rm -f $(DESTDIR)$(APPDIR)/ps-ftp-downloader.desktop
-	rm -f $(DESTDIR)$(PIXMAPSDIR)/ps-ftp-downloader.png
+	rm -f $(DESTDIR)$(APPDIR)/p2c-downloader.desktop
+	rm -f $(DESTDIR)$(PIXMAPSDIR)/p2c-downloader.png
 
 deb: all
 	chmod +x build-deb.sh
@@ -56,5 +56,5 @@ deb-install: deb
 	pkexec apt-get install -y --reinstall $$(realpath ../$(TARGET)_$(VERSION)_$(ARCH).deb)
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) ps-ftp-downloader
 	@echo "  [OK] Cleaned"

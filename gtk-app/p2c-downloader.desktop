@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=P2C Downloader
+GenericName=P2C Downloader
+Comment=Stream PKG and files directly from network to console via FTP — zero local storage
+Exec=p2c-downloader
+Icon=p2c-downloader
+StartupWMClass=io.p2cdownloader.app
+Terminal=false
+StartupNotify=true
+Categories=Network;FileTransfer;Game;
+Keywords=ps4;ps5;ps3;ftp;pkg;download;upload;stream;playstation;hen;goldhen;p2c;

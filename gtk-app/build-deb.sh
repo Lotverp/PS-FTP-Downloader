@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────
 #  build-deb.sh — Create an installable .deb package for
-#                 PS FTP Downloader (GTK4)
+#                 P2C Downloader (GTK4)
 #
 #  Usage: ./build-deb.sh
-#  Output: ../ps-ftp-downloader_1.3.1_amd64.deb
+#  Output: ../p2c-downloader_1.3.5_amd64.deb
 # ─────────────────────────────────────────────────────────────────
 
 set -euo pipefail
 
-PKG_NAME="ps-ftp-downloader"
+PKG_NAME="p2c-downloader"
 PKG_VERSION="1.3.5"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
-PKG_DESCRIPTION="Download PKG directly from network to PS via FTP — with split-archive, DLPSGame catalog & Undetected ChromeDriver"
+PKG_DESCRIPTION="Download PKG directly from network to console via FTP — with split-archive, DLPSGame catalog & Undetected ChromeDriver"
 PKG_DEPENDS="libgtk-4-1, libcurl4 | libcurl4t64, libjson-glib-1.0-0, 7zip | unar | p7zip-full | unrar, python3, python3-pip"
 PKG_RECOMMENDS="chromium-browser | google-chrome-stable | chromium, unar"
 
@@ -26,7 +26,7 @@ BOLD="\033[1m"; GREEN="\033[1;32m"; CYAN="\033[1;36m"; RED="\033[1;31m"; RESET="
 
 echo -e "${CYAN}"
 echo "  ============================================"
-echo "      PS FTP Downloader — .deb Builder        "
+echo "      P2C Downloader — .deb Builder           "
 echo "  ============================================"
 echo -e "${RESET}"
 
@@ -47,19 +47,19 @@ echo -e "${BOLD}[2/4] Compiling...${RESET}"
 cd "${SCRIPT_DIR}"
 make clean 2>/dev/null || true
 make
-echo -e "  [OK] Binary built: ${SCRIPT_DIR}/ps-ftp-downloader"
+echo -e "  [OK] Binary built: ${SCRIPT_DIR}/p2c-downloader"
 
 echo -e "${BOLD}[3/4] Creating package structure...${RESET}"
 rm -rf "${PKG_ROOT}"
 mkdir -p \
     "${PKG_ROOT}/DEBIAN" \
     "${PKG_ROOT}/usr/bin" \
-    "${PKG_ROOT}/usr/share/ps-ftp-downloader" \
+    "${PKG_ROOT}/usr/share/p2c-downloader" \
     "${PKG_ROOT}/usr/share/applications" \
     "${PKG_ROOT}/usr/share/pixmaps" \
     "${PKG_ROOT}/usr/share/doc/${PKG_NAME}"
 
-INSTALLED_SIZE=$(du -sk "${SCRIPT_DIR}/ps-ftp-downloader" | cut -f1)
+INSTALLED_SIZE=$(du -sk "${SCRIPT_DIR}/p2c-downloader" | cut -f1)
 
 cat > "${PKG_ROOT}/DEBIAN/control" << EOT
 Package: ${PKG_NAME}
@@ -71,17 +71,17 @@ Depends: ${PKG_DEPENDS}
 Recommends: ${PKG_RECOMMENDS}
 Section: net
 Priority: optional
-Homepage: https://github.com/Lotverp/PS-FTP-Downloader
+Homepage: https://github.com/Lotverp/P2C-Downloader
 Description: ${PKG_DESCRIPTION}
- PS FTP Downloader downloads PKG files directly from any URL
- and sends them to the PS via FTP in real time, using a
+ P2C Downloader downloads PKG files directly from any URL
+ and sends them to the console via FTP in real time, using a
  2 MB ring-buffer pipe. No temporary files, zero local storage.
  .
  Split-archive mode: download multi-part archives (.rar/.zip/etc.),
  extract locally with 7zip or unar, and upload the resulting .pkg via FTP.
  All temporary files are deleted automatically after the upload.
  .
- Compatible with: GoldHen, ps4-hen, and any PS FTP server.
+ Compatible with: GoldHen, ps4-hen, and any PlayStation FTP server.
  .
  Features:
   - Modern GTK4 interface with dark theme
@@ -125,33 +125,36 @@ fi
 EOF3
 chmod 0755 "${PKG_ROOT}/DEBIAN/postrm"
 
-install -m 0755 "${SCRIPT_DIR}/ps-ftp-downloader"           "${PKG_ROOT}/usr/bin/ps-ftp-downloader"
-install -m 0644 "${SCRIPT_DIR}/style.css"                     "${PKG_ROOT}/usr/share/ps-ftp-downloader/style.css"
-install -m 0755 "${SCRIPT_DIR}/uc_resolver.py"                "${PKG_ROOT}/usr/share/ps-ftp-downloader/uc_resolver.py"
-install -m 0755 "${SCRIPT_DIR}/setup-bot-resolver.sh"         "${PKG_ROOT}/usr/share/ps-ftp-downloader/setup-bot-resolver.sh"
-install -m 0644 "${SCRIPT_DIR}/github-mark.svg"             "${PKG_ROOT}/usr/share/ps-ftp-downloader/github-mark.svg"
+install -m 0755 "${SCRIPT_DIR}/p2c-downloader"           "${PKG_ROOT}/usr/bin/p2c-downloader"
+install -m 0644 "${SCRIPT_DIR}/style.css"                 "${PKG_ROOT}/usr/share/p2c-downloader/style.css"
+install -m 0755 "${SCRIPT_DIR}/uc_resolver.py"            "${PKG_ROOT}/usr/share/p2c-downloader/uc_resolver.py"
+install -m 0755 "${SCRIPT_DIR}/setup-bot-resolver.sh"     "${PKG_ROOT}/usr/share/p2c-downloader/setup-bot-resolver.sh"
+install -m 0644 "${SCRIPT_DIR}/github-mark.svg"         "${PKG_ROOT}/usr/share/p2c-downloader/github-mark.svg"
 if [ -f "${SCRIPT_DIR}/../catalog.json" ]; then
-    install -m 0644 "${SCRIPT_DIR}/../catalog.json"         "${PKG_ROOT}/usr/share/ps-ftp-downloader/catalog.json.example"
+    install -m 0644 "${SCRIPT_DIR}/../catalog.json"     "${PKG_ROOT}/usr/share/p2c-downloader/catalog.json.example"
 fi
+install -m 0644 "${SCRIPT_DIR}/p2c-downloader.desktop"  "${PKG_ROOT}/usr/share/applications/p2c-downloader.desktop"
 
 # Check if the PNG icon exists, otherwise use SVG fallback
-if [ -f "${SCRIPT_DIR}/ps-ftp-downloader.png" ]; then
-    install -m 0644 "${SCRIPT_DIR}/ps-ftp-downloader.png" "${PKG_ROOT}/usr/share/pixmaps/ps-ftp-downloader.png"
+if [ -f "${SCRIPT_DIR}/p2c-downloader.png" ]; then
+    install -m 0644 "${SCRIPT_DIR}/p2c-downloader.png" "${PKG_ROOT}/usr/share/pixmaps/p2c-downloader.png"
+elif [ -f "${SCRIPT_DIR}/ps-ftp-downloader.png" ]; then
+    install -m 0644 "${SCRIPT_DIR}/ps-ftp-downloader.png" "${PKG_ROOT}/usr/share/pixmaps/p2c-downloader.png"
 else
     mkdir -p "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps"
-    cat > "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps/ps-ftp-downloader.svg" << 'SVGEOF'
+    cat > "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps/p2c-downloader.svg" << 'SVGEOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="64" height="64" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
   <rect width="64" height="64" rx="14" fill="#13132a"/>
-  <text x="32" y="44" text-anchor="middle" font-size="28" fill="#a5b4fc" font-family="sans-serif">PS</text>
+  <text x="32" y="44" text-anchor="middle" font-size="28" fill="#a5b4fc" font-family="sans-serif">P2C</text>
 </svg>
 SVGEOF
 fi
 
 cat > "${PKG_ROOT}/usr/share/doc/${PKG_NAME}/copyright" << EOT
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: ps-ftp-downloader
-Source: https://github.com/Lotverp/PS-FTP-Downloader
+Upstream-Name: p2c-downloader
+Source: https://github.com/Lotverp/P2C-Downloader
 
 Files: *
 Copyright: $(date +%Y) ${PKG_MAINTAINER}

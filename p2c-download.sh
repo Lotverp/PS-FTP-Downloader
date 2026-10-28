@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ─────────────────────────────────────────────────────────────────
-#  PS FTP Downloader — CLI
+#  P2C Downloader — CLI
 #  Scarica file e PKG direttamente dalla rete alla PlayStation via FTP
 #  senza salvare nulla localmente su disco.
 #
@@ -29,8 +29,8 @@ RESET="\033[0m"
 clear
 echo -e "${CYAN}"
 echo "  ============================================"
-echo "           PS FTP Downloader  v1.3.5          "
-echo "    Rete -> PS FTP (Nessuno storage locale)   "
+echo "           P2C Downloader  v1.3.5             "
+echo "    Rete -> Console FTP (Nessuno storage locale) "
 echo "  ============================================"
 echo -e "${RESET}"
 echo -e "  ${DIM}Destinazione: ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${RESET}"
@@ -49,7 +49,7 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 
 # Assicura automaticamente che la cartella FTP remota esista sulla PS
-echo -e "${DIM}  Connessione a PS FTP (ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/)...${RESET}"
+echo -e "${DIM}  Connessione a Console FTP (ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/)...${RESET}"
 if curl -s --connect-timeout 4 -m 8 -u "anonymous:anonymous@" --ftp-create-dirs "ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/" -o /dev/null; then
     echo -e "  ${GREEN}[OK] Connesso alla PS — Cartella '${FTP_DIR}' verificata e pronta!${RESET}"
 else

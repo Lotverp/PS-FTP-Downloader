@@ -1,6 +1,6 @@
 <div align="center">
 
-# PS FTP Downloader
+# P2C Downloader
 
 **Download diretto di file PKG da Internet alla PlayStation in Pure Streaming — Zero spazio occupato sul PC.**
 
@@ -15,9 +15,9 @@
 
 ## Panoramica del Progetto
 
-**PS FTP Downloader** è un'applicazione nativa per Linux (scritta in C con interfaccia grafica moderna in GTK4) concepita per semplificare e velocizzare al massimo l'installazione di giochi, aggiornamenti, DLC, homebrew e archivi su console **PlayStation 4 (PS4), PlayStation 5 (PS5), PlayStation 3 (PS3) e PlayStation Vita**.
+**P2C Downloader** è un'applicazione nativa per Linux (scritta in C con interfaccia grafica moderna in GTK4) concepita per semplificare e velocizzare al massimo l'installazione di giochi, aggiornamenti, DLC, homebrew e archivi su console **PlayStation 4 (PS4), PlayStation 5 (PS5), PlayStation 3 (PS3) e PlayStation Vita**.
 
-A differenza dei metodi tradizionali — che costringono a scaricare decine o centinaia di gigabyte sul disco del computer per poi copiarli su chiavette USB o inviarli via FTP in un secondo momento — PS FTP Downloader adotta una tecnologia proprietaria di **Pure RAM Ring-Buffer Streaming**:
+A differenza dei metodi tradizionali — che costringono a scaricare decine o centinaia di gigabyte sul disco del computer per poi copiarli su chiavette USB o inviarli via FTP in un secondo momento — P2C Downloader adotta una tecnologia proprietaria di **Pure RAM Ring-Buffer Streaming**:
 
 ```
 ┌──────────────┐         HTTP/HTTPS          ┌──────────────────────┐         FTP Socket         ┌──────────────────────┐
@@ -97,11 +97,11 @@ Il Package Installer di GoldHEN cerca i file `.pkg` da installare all'interno de
 ```text
 /data/pkg
 ```
-* **Creazione automatica**: Non devi preoccuparti di crearla a mano: aprendo le **Impostazioni** di PS FTP Downloader e premendo il tasto **`Test Connessione & Crea Cartella`**, il programma si connette alla console e crea automaticamente la cartella `/data/pkg` se non è ancora presente!
+* **Creazione automatica**: Non devi preoccuparti di crearla a mano: aprendo le **Impostazioni** di P2C Downloader e premendo il tasto **`Test Connessione & Crea Cartella`**, il programma si connette alla console e crea automaticamente la cartella `/data/pkg` se non è ancora presente!
 * **Creazione manuale (alternativa)**: Puoi crearla anche usando un homebrew file manager sulla PS4 (come *PS4-Xplorer* o *Itemzflow*), creando la sottocartella `pkg` dentro `/data`.
 
 #### Passo 3: Come installare il gioco sulla PS4 al termine del download
-1. Quando PS FTP Downloader segnala **COMPLETATO** (100%), il file `.pkg` si trova già interamente nella memoria della console.
+1. Quando P2C Downloader segnala **COMPLETATO** (100%), il file `.pkg` si trova già interamente nella memoria della console.
 2. Sulla PS4 vai in:
    * **Impostazioni** ➔ **GoldHEN** ➔ **Package Installer** (oppure **Debug Settings** ➔ **Game** ➔ **Package Installer**).
 3. Vedrai comparire il file del gioco appena trasferito.
@@ -125,7 +125,7 @@ Il Package Installer di GoldHEN cerca i file `.pkg` da installare all'interno de
 1. Avvia la console con HEN o Custom Firmware (Evilnat / Rebug).
 2. Assicurati che **webMAN-MOD** sia attivo (il server FTP parte automaticamente in background all'avvio della PS3).
 3. La porta FTP standard di webMAN-MOD è la **`21`**.
-4. La cartella standard dei pacchetti su PS3 è **`/dev_hdd0/packages`**. Nelle Impostazioni di PS FTP Downloader inserisci `dev_hdd0/packages` nel campo *Directory*.
+4. La cartella standard dei pacchetti su PS3 è **`/dev_hdd0/packages`**. Nelle Impostazioni di P2C Downloader inserisci `dev_hdd0/packages` nel campo *Directory*.
 5. A trasferimento completato, installa il file dal menu XMB della PS3 in **Gioco** ➔ **Package Manager** ➔ **Install Package Files** ➔ **Standard**.
 
 ---
@@ -136,11 +136,11 @@ Il Package Installer di GoldHEN cerca i file `.pkg` da installare all'interno de
 
 Scarica il pacchetto `.deb` rilasciato nella sezione [Releases](../../releases) oppure compilalo localmente, quindi installalo con:
 ```bash
-sudo apt install -y ./ps-ftp-downloader_1.3.5_amd64.deb
+sudo apt install -y ./p2c-downloader_1.3.5_amd64.deb
 ```
 L'applicazione viene integrata nel menu di sistema tra i giochi e gli strumenti di rete. Puoi avviarla dall'elenco applicazioni o digitando da terminale:
 ```bash
-ps-ftp-downloader
+p2c-downloader
 ```
 
 ### Metodo 2: Compilazione dai sorgenti
@@ -152,10 +152,10 @@ sudo apt install -y build-essential libgtk-4-dev libcurl4-openssl-dev libjson-gl
 ```
 Clona il repository ed effettua la compilazione:
 ```bash
-git clone https://github.com/Lotverp/PS-FTP-Downloader.git
-cd PS-FTP-Downloader/gtk-app
+git clone https://github.com/Lotverp/P2C-Downloader.git
+cd P2C-Downloader/gtk-app
 make
-./ps-ftp-downloader
+./p2c-downloader
 ```
 
 ### Configurazione del Risolutore Anti-Bot (Consigliato)
@@ -471,7 +471,7 @@ Si apre cliccando sull'icona dell'ingranaggio **⚙** nella barra superiore. Que
     * **Casella di Spunta `Modalità Headless`**: Se attivata, il browser anti-bot gira in background senza aprire finestre visibili sul monitor. Se disattivata, puoi vedere la finestra del browser mentre naviga e risolve le pagine.
     * **Tasto `Setup Dipendenze Undetected ChromeDriver`**: Installa automaticamente con un clic i pacchetti Python necessari (`pip install undetected-chromedriver selenium`) e verifica la configurazione del browser.
 11. **Tasto `Save`**:
-    * Salva tutte le impostazioni in modo permanente nel file di configurazione `~/.config/ps-ftp-downloader/config.json`.
+    * Salva tutte le impostazioni in modo permanente nel file di configurazione `~/.config/p2c-downloader/settings.ini`.
 12. **Tasto `Cancel`**:
     * Chiude le impostazioni scartando eventuali modifiche non salvate.
 
@@ -481,7 +481,7 @@ Si apre cliccando sull'icona dell'ingranaggio **⚙** nella barra superiore. Que
 
 I siti aggregatori di giochi proteggono spesso i propri mirror con sistemi di protezione avanzati (Cloudflare Turnstile, CutCaptcha, countdown forzati o link-shortener). I tradizionali scraper HTTP falliscono sistematicamente su queste pagine.
 
-**PS FTP Downloader** include un motore intelligente basato su Selenium e ChromeDriver non rilevabile (`gtk-app/uc_resolver.py`):
+**P2C Downloader** include un motore intelligente basato su Selenium e ChromeDriver non rilevabile (`gtk-app/uc_resolver.py`):
 
 ```
 Link Protetto ──► [UC Resolver] ──► Blocco Popunder ──► Evasione Honeypot ──► Input Biometrico CDP ──► Stream Diretto PKG
@@ -506,9 +506,9 @@ Link Protetto ──► [UC Resolver] ──► Blocco Popunder ──► Evasio
 Se possiedi un account Real-Debrid, puoi sfruttare la massima velocità e il bypass dei limiti di banda:
 
 1. Visita [real-debrid.com/apitoken](https://real-debrid.com/apitoken) e copia il tuo token API personale.
-2. Apri le **Impostazioni** di PS FTP Downloader e incolla la chiave nel campo `Real-Debrid Token`. Premi **Save**.
+2. Apri le **Impostazioni** di P2C Downloader e incolla la chiave nel campo `Real-Debrid Token`. Premi **Save**.
 3. **Vantaggi Immediati**:
-   * **Bypass del limite di attesa 1Fichier**: 1Fichier impone agli utenti gratuiti un'attesa forzata di 60-90 minuti tra un download e l'altro (*"Without subscription you must wait..."*). Se il token Debrid è presente, PS FTP Downloader rileva il limite e genera istantaneamente il link diretto ad alta velocità tramite Real-Debrid in meno di 0.3 secondi!
+   * **Bypass del limite di attesa 1Fichier**: 1Fichier impone agli utenti gratuiti un'attesa forzata di 60-90 minuti tra un download e l'altro (*"Without subscription you must wait..."*). Se il token Debrid è presente, P2C Downloader rileva il limite e genera istantaneamente il link diretto ad alta velocità tramite Real-Debrid in meno di 0.3 secondi!
    * **Sblocco 1-Click Multi-Hoster**: Dalla scheda dettagli di qualsiasi gioco puoi cliccare sul pulsante **`Debrid 1-Click`** accanto a link Rapidgator, Mega, Datanodes o 1Fichier per avviare il trasferimento alla massima velocità della tua connessione.
 
 ---
@@ -529,14 +529,14 @@ La velocità di trasferimento verso la PlayStation dipende dalla connessione loc
 
 ## Script Standalone da Terminale (CLI)
 
-Per chi utilizza distribuzioni Linux server headless (senza interfaccia grafica) o gestisce i trasferimenti tramite SSH, il repository include lo script standalone bash [`ps-ftp-download.sh`](ps-ftp-download.sh):
+Per chi utilizza distribuzioni Linux server headless (senza interfaccia grafica) o gestisce i trasferimenti tramite SSH, il repository include lo script standalone bash [`p2c-download.sh`](p2c-download.sh):
 
 ```bash
 # Rendi lo script eseguibile
-chmod +x ps-ftp-download.sh
+chmod +x p2c-download.sh
 
 # Avvia il download streaming interattivo
-./ps-ftp-download.sh
+./p2c-download.sh
 ```
 
 ### Dipendenze richieste per lo script CLI:

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────
 #  setup-bot-resolver.sh — Configure Undetected ChromeDriver
-#                          for PS FTP Downloader
+#                          for P2C Downloader
 # ─────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -10,7 +10,7 @@ BOLD="\033[1m"; GREEN="\033[1;32m"; CYAN="\033[1;36m"; YELLOW="\033[1;33m"; RED=
 
 echo -e "${CYAN}"
 echo "  ========================================================"
-echo "    PS FTP Downloader — Undetected ChromeDriver Setup     "
+echo "    P2C Downloader — Undetected ChromeDriver Setup        "
 echo "  ========================================================"
 echo -e "${RESET}"
 
@@ -53,6 +53,9 @@ python3 -m pip install --user --break-system-packages --upgrade undetected-chrom
 # 5. Verify setup
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOLVER="$SCRIPT_DIR/uc_resolver.py"
+if [ ! -f "$RESOLVER" ]; then
+    RESOLVER="/usr/share/p2c-downloader/uc_resolver.py"
+fi
 if [ ! -f "$RESOLVER" ]; then
     RESOLVER="/usr/share/ps-ftp-downloader/uc_resolver.py"
 fi
