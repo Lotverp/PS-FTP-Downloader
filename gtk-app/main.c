@@ -1214,9 +1214,60 @@ static gboolean ftp_ensure_dir(const char *host, int port,
     return ok;
 }
 
+typedef enum {
+    CONN_STATE_PENDING,
+    CONN_STATE_CONNECTED,
+    CONN_STATE_NOT_CONNECTED
+} ConnState;
+
+typedef struct {
+    ConnState state;
+} ConnUpdateData;
+
+static gboolean on_conn_status_idle(gpointer user_data) {
+    ConnUpdateData *cd = (ConnUpdateData *)user_data;
+    if (g_lbl_sub && GTK_IS_WIDGET(g_lbl_sub)) {
+        gtk_widget_remove_css_class(g_lbl_sub, "conn-pending");
+        gtk_widget_remove_css_class(g_lbl_sub, "conn-connected");
+        gtk_widget_remove_css_class(g_lbl_sub, "conn-disconnected");
+
+        char tooltip[1024];
+        snprintf(tooltip, sizeof(tooltip), "Console: ftp://%s:%d/%s (clicca per verificare)", g_ftp_host, g_ftp_port, g_ftp_dir);
+        gtk_widget_set_tooltip_text(g_lbl_sub, tooltip);
+
+        switch (cd->state) {
+            case CONN_STATE_CONNECTED:
+                gtk_label_set_text(GTK_LABEL(g_lbl_sub), "CONNECTED");
+                gtk_widget_add_css_class(g_lbl_sub, "conn-connected");
+                break;
+            case CONN_STATE_NOT_CONNECTED:
+                gtk_label_set_text(GTK_LABEL(g_lbl_sub), "NOT CONNECTED");
+                gtk_widget_add_css_class(g_lbl_sub, "conn-disconnected");
+                break;
+            case CONN_STATE_PENDING:
+            default:
+                gtk_label_set_text(GTK_LABEL(g_lbl_sub), "PENDING CONNECTION");
+                gtk_widget_add_css_class(g_lbl_sub, "conn-pending");
+                break;
+        }
+    }
+    free(cd);
+    return G_SOURCE_REMOVE;
+}
+
+static void set_conn_status(ConnState state) {
+    ConnUpdateData *cd = malloc(sizeof(*cd));
+    if (!cd) return;
+    cd->state = state;
+    g_idle_add(on_conn_status_idle, cd);
+}
+
 static void *ftp_ensure_dir_bg_thread(void *arg) {
     (void)arg;
-    ftp_ensure_dir(g_ftp_host, g_ftp_port, g_ftp_user, g_ftp_pass, g_ftp_dir, NULL, 0);
+    set_conn_status(CONN_STATE_PENDING);
+    char err[256] = "";
+    gboolean ok = ftp_ensure_dir(g_ftp_host, g_ftp_port, g_ftp_user, g_ftp_pass, g_ftp_dir, err, sizeof(err));
+    set_conn_status(ok ? CONN_STATE_CONNECTED : CONN_STATE_NOT_CONNECTED);
     return NULL;
 }
 
@@ -1225,6 +1276,24 @@ static void trigger_ftp_ensure_dir_async(void) {
     if (pthread_create(&th, NULL, ftp_ensure_dir_bg_thread, NULL) == 0) {
         pthread_detach(th);
     }
+}
+
+static gboolean periodic_conn_check(gpointer user_data) {
+    (void)user_data;
+    pthread_mutex_lock(&dl_mutex);
+    gboolean busy = FALSE;
+    for (int i = 0; i < n_downloads; i++) {
+        if (downloads[i]->status == DL_ACTIVE || downloads[i]->status == DL_PROBING || downloads[i]->status == DL_UPLOADING) {
+            busy = TRUE;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&dl_mutex);
+
+    if (!busy) {
+        trigger_ftp_ensure_dir_async();
+    }
+    return G_SOURCE_CONTINUE;
 }
 
 typedef struct {
@@ -3408,11 +3477,7 @@ static void on_settings_response(GtkDialog *dialog, int response,
 
         save_settings();
 
-        if (g_lbl_sub && GTK_IS_WIDGET(g_lbl_sub)) {
-            char sub[1024];
-            snprintf(sub, sizeof(sub), "ftp://%s:%d/%s", g_ftp_host, g_ftp_port, g_ftp_dir);
-            gtk_label_set_text(GTK_LABEL(g_lbl_sub), sub);
-        }
+        set_conn_status(CONN_STATE_PENDING);
 
         trigger_ftp_ensure_dir_async();
     }
@@ -7837,11 +7902,17 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_box_append(GTK_BOX(title_row), lbl_title);
     gtk_box_append(GTK_BOX(title_row), btn_github);
 
-    char sub[1024];
-    snprintf(sub, sizeof(sub), "ftp://%s:%d/%s", g_ftp_host, g_ftp_port, g_ftp_dir);
-    g_lbl_sub = gtk_label_new(sub);
+    g_lbl_sub = gtk_label_new("PENDING CONNECTION");
     gtk_widget_add_css_class(g_lbl_sub, "app-subtitle");
+    gtk_widget_add_css_class(g_lbl_sub, "conn-pending");
+    char tooltip[1024];
+    snprintf(tooltip, sizeof(tooltip), "Console: ftp://%s:%d/%s (clicca per verificare)", g_ftp_host, g_ftp_port, g_ftp_dir);
+    gtk_widget_set_tooltip_text(g_lbl_sub, tooltip);
     gtk_label_set_xalign(GTK_LABEL(g_lbl_sub), 0.0);
+
+    GtkGestureClick *click_sub = GTK_GESTURE_CLICK(gtk_gesture_click_new());
+    g_signal_connect_swapped(click_sub, "released", G_CALLBACK(trigger_ftp_ensure_dir_async), NULL);
+    gtk_widget_add_controller(g_lbl_sub, GTK_EVENT_CONTROLLER(click_sub));
 
     gtk_box_append(GTK_BOX(title_col), title_row);
     gtk_box_append(GTK_BOX(title_col), g_lbl_sub);
@@ -7974,6 +8045,7 @@ static void activate(GtkApplication *app, gpointer user_data) {
     gtk_box_append(GTK_BOX(root), statusbar);
 
     gtk_window_set_child(GTK_WINDOW(g_window), root);
+    g_timeout_add_seconds(20, periodic_conn_check, NULL);
     gtk_window_present(GTK_WINDOW(g_window));
 }
 

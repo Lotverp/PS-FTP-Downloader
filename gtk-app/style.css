@@ -73,7 +73,27 @@ listview > row:hover {
 
 .app-subtitle {
     font-size: 11px;
-    color: #64748b;
+    font-weight: 700;
+    letter-spacing: 0.6px;
+    color: #94a3b8;
+    cursor: pointer;
+    transition: color 0.2s ease, opacity 0.2s ease;
+}
+
+.app-subtitle:hover {
+    opacity: 0.8;
+}
+
+.app-subtitle.conn-pending {
+    color: #f59e0b; /* Amber */
+}
+
+.app-subtitle.conn-connected {
+    color: #10b981; /* Emerald Green */
+}
+
+.app-subtitle.conn-disconnected {
+    color: #ef4444; /* Red */
 }
 
 /* ── Header Action Buttons ── */
