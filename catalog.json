@@ -1,5 +1,5 @@
 {
-  "name": "PS4 Homebrew Community Feed",
+  "name": "Console Homebrew & Tools Feed",
   "items": [
     {
       "id": "apollo-save-tool",
@@ -48,6 +48,42 @@
       "url": "https://github.com/bucanero/PS4CheatsManager/releases/download/v1.2.2/IV0000-CHTM00777_00-PS4CHEATSMANAGER.pkg",
       "pkg_name": "PS4CheatsManager.pkg",
       "size": 17800000
+    },
+    {
+      "id": "retroarch",
+      "name": "RetroArch Universal Frontend",
+      "version": "1.19.1",
+      "category": "Emulators",
+      "region": "Tutte",
+      "description": "Frontend universale multi-sistema per emulazione retro-gaming e homebrew.",
+      "icon": "https://raw.githubusercontent.com/libretro/RetroArch/master/media/retroarch.png",
+      "url": "https://buildbot.libretro.com/stable/1.19.1/playstation/ps4/RetroArch.pkg",
+      "pkg_name": "RetroArch.pkg",
+      "size": 250000000
+    },
+    {
+      "id": "vitashell",
+      "name": "VitaShell File Manager (PS Vita)",
+      "version": "2.00",
+      "category": "Utility",
+      "region": "Tutte",
+      "description": "File manager, server FTP e installatore di pacchetti VPK per PS Vita.",
+      "icon": "https://raw.githubusercontent.com/TheOfficialFloW/VitaShell/master/sce_sys/icon0.png",
+      "url": "https://github.com/TheOfficialFloW/VitaShell/releases/download/2.00/VitaShell.vpk",
+      "pkg_name": "VitaShell.vpk",
+      "size": 4194304
+    },
+    {
+      "id": "ftpd-switch",
+      "name": "ftpd Pro (Nintendo Switch)",
+      "version": "3.1.0",
+      "category": "Utility",
+      "region": "Tutte",
+      "description": "Server FTP ad alte prestazioni per Nintendo Switch per trasferimenti wireless.",
+      "icon": "https://raw.githubusercontent.com/mtheall/ftpd/master/icon.png",
+      "url": "https://github.com/mtheall/ftpd/releases/download/v3.1.0/ftpd.nro",
+      "pkg_name": "ftpd.nro",
+      "size": 1200000
     }
   ]
 }

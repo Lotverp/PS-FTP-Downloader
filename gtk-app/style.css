@@ -1313,3 +1313,18 @@ searchentry text {
     min-width: 320px;
     min-height: 180px;
 }
+
+/* ── Supplementary layout & progress styling ── */
+.catalog-page,
+.dlps-page {
+    padding: 12px 16px;
+}
+
+.catalog-list {
+    background: transparent;
+}
+
+.dl-progress {
+    min-height: 8px;
+    border-radius: 4px;
+}

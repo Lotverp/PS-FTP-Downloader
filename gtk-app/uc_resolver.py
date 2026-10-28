@@ -116,10 +116,17 @@ def is_direct_stream_url(url):
             return True
     return False
 
+DIRECT_FILE_EXTENSIONS = (
+    ".pkg", ".iso", ".bin", ".cue", ".img",
+    ".xci", ".nsp", ".cia", ".chd", ".cso",
+    ".wbfs", ".rvz", ".vpk", ".3ds", ".nds",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".xz", ".001", ".002"
+)
+
 def is_direct_file_url(url):
     if not url or not url.startswith("http"): return False
     clean = url.split("?")[0].lower()
-    return any(clean.endswith(ext) for ext in [".pkg", ".rar", ".7z", ".zip", ".iso", ".bin"])
+    return any(clean.endswith(ext) for ext in DIRECT_FILE_EXTENSIONS)
 
 def close_rogue_ad_windows(driver, main_handle=None):
     """Closes any rogue popup or ad windows that do not belong to legitimate hosters or protectors."""

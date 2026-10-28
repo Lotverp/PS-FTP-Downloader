@@ -151,17 +151,25 @@ else
         | curl --silent --show-error --ftp-create-dirs -T - "${FTP_URL}"
 fi
 
-EXIT_CODE=$?
+PIPES=("${PIPESTATUS[@]}")
+WGET_STATUS=${PIPES[0]}
+CURL_STATUS=${PIPES[2]}
 
 echo ""
-if [[ $EXIT_CODE -eq 0 ]]; then
+if [[ $WGET_STATUS -eq 0 && $CURL_STATUS -eq 0 ]]; then
     echo -e "${GREEN}${BOLD}  [OK] File inviato con successo alla Console!${RESET}"
     echo -e "  ${DIM}Disponibile sulla Console in: /${FTP_DIR}/${DEST_FILENAME}${RESET}"
 else
-    echo -e "${RED}${BOLD}  [Errore] Trasferimento non riuscito (codice: ${EXIT_CODE})${RESET}"
-    echo -e "  ${YELLOW}  - Verifica che la console sia accesa con server FTP attivo${RESET}"
-    echo -e "  ${YELLOW}  - Controlla l'indirizzo IP configurato: ${FTP_HOST}:${FTP_PORT}${RESET}"
-    exit $EXIT_CODE
+    echo -e "${RED}${BOLD}  [Errore] Trasferimento non riuscito${RESET}"
+    if [[ $WGET_STATUS -ne 0 ]]; then
+        echo -e "${YELLOW}  - Errore durante il download del file sorgente (URL non valido o server offline, codice: ${WGET_STATUS})${RESET}"
+    fi
+    if [[ $CURL_STATUS -ne 0 ]]; then
+        echo -e "${YELLOW}  - Errore durante l'invio FTP alla console (codice: ${CURL_STATUS})${RESET}"
+        echo -e "  ${YELLOW}  - Verifica che la console sia accesa con server FTP attivo${RESET}"
+        echo -e "  ${YELLOW}  - Controlla l'indirizzo IP configurato: ${FTP_HOST}:${FTP_PORT}${RESET}"
+    fi
+    exit $(( WGET_STATUS != 0 ? WGET_STATUS : CURL_STATUS ))
 fi
 
 echo ""

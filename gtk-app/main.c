@@ -850,9 +850,11 @@ static void *http_thread_fn(void *arg) {
 
         if (!transient) break;
 
-        /* Transient error -> wait and retry */
+        /* Transient error -> wait and retry with interruptible check */
         retries++;
-        sleep(2);
+        for (int s = 0; s < 20 && !dl->request_stop && !pipe->cancel; s++) {
+            g_usleep(100000);
+        }
     }
 
     pthread_mutex_lock(&pipe->mutex);
@@ -970,26 +972,32 @@ static void build_ftp_url(char *out, size_t out_sz,
     while (token) {
         char *esc_tok = esc_c ? curl_easy_escape(esc_c, token, 0) : NULL;
         if (!first) {
-            strncat(clean_dir, "/", sizeof(clean_dir) - strlen(clean_dir) - 1);
+            g_strlcat(clean_dir, "/", sizeof(clean_dir));
         }
-        strncat(clean_dir, esc_tok ? esc_tok : token, sizeof(clean_dir) - strlen(clean_dir) - 1);
+        g_strlcat(clean_dir, esc_tok ? esc_tok : token, sizeof(clean_dir));
         if (esc_tok) curl_free(esc_tok);
         first = FALSE;
         token = strtok_r(NULL, "/", &saveptr);
     }
 
-    if (clean_dir[0] == '\0') {
-        strncpy(clean_dir, "data/pkg", sizeof(clean_dir) - 1);
-    }
-
     char *esc_name = (esc_c && filename) ? curl_easy_escape(esc_c, filename, 0) : NULL;
 
     if (filename && filename[0]) {
-        snprintf(out, out_sz, "ftp://%s:%d/%s/%s",
-                 host, port, clean_dir, esc_name ? esc_name : filename);
+        if (clean_dir[0] != '\0') {
+            snprintf(out, out_sz, "ftp://%s:%d/%s/%s",
+                     host, port, clean_dir, esc_name ? esc_name : filename);
+        } else {
+            snprintf(out, out_sz, "ftp://%s:%d/%s",
+                     host, port, esc_name ? esc_name : filename);
+        }
     } else {
-        snprintf(out, out_sz, "ftp://%s:%d/%s/",
-                 host, port, clean_dir);
+        if (clean_dir[0] != '\0') {
+            snprintf(out, out_sz, "ftp://%s:%d/%s/",
+                     host, port, clean_dir);
+        } else {
+            snprintf(out, out_sz, "ftp://%s:%d/",
+                     host, port);
+        }
     }
 
     if (esc_name) curl_free(esc_name);
@@ -2078,7 +2086,7 @@ static void find_largest_file_recursive(const char *dir, char *best_path, off_t 
             } else if (S_ISREG(st.st_mode)) {
                 if (st.st_size > *best_size) {
                     *best_size = st.st_size;
-                    strcpy(best_path, path);
+                    g_strlcpy(best_path, path, 1024);
                 }
             }
         }
@@ -2897,7 +2905,7 @@ static Download *start_split_download(const char **urls, int n,
     dl->progress   = -1.0;
     dl->eta        = -1.0;
 
-    g_strlcpy(dl->dest_name, final_pkg, sizeof(dl->dest_name));
+    g_strlcpy(dl->dest_name, final_name, sizeof(dl->dest_name));
     snprintf(dl->url, sizeof(dl->url), "[Archivio diviso — %d part%s]",
              sa->n_urls, sa->n_urls == 1 ? "e" : "i");
 
@@ -3890,15 +3898,14 @@ static void show_prep_progress(const char *msg) {
 /* Validation helpers */
 static gboolean is_valid_feed_url(const char *url) {
     if (!url || !url[0]) return FALSE;
-    if (g_str_has_prefix(url, "https://")) return TRUE;
-    /* Local testing support (Step 8) */
-    if (g_str_has_prefix(url, "http://localhost:") || g_str_has_prefix(url, "http://127.0.0.1:") ||
-        g_str_has_prefix(url, "http://localhost/")  || g_str_has_prefix(url, "http://127.0.0.1/"))
+    if (g_str_has_prefix(url, "https://") ||
+        g_str_has_prefix(url, "http://")  ||
+        g_str_has_prefix(url, "ftp://"))
         return TRUE;
     return FALSE;
 }
 
-static gboolean is_valid_pkg_name(const char *name) {
+static gboolean is_valid_dest_filename(const char *name) {
     if (!name || !name[0]) return FALSE;
     if (strchr(name, '/') != NULL || strchr(name, '\\') != NULL) return FALSE;
     if (strstr(name, "..") != NULL) return FALSE;
@@ -3978,6 +3985,19 @@ static int parse_catalog_json(const char *json_data, gsize json_len, const char 
                         strncpy(it.password, json_object_get_string_member(iobj, "password"), sizeof(it.password) - 1);
                     if (json_object_has_member(iobj, "pkg_name"))
                         strncpy(it.pkg_name, json_object_get_string_member(iobj, "pkg_name"), sizeof(it.pkg_name) - 1);
+                    else if (json_object_has_member(iobj, "filename"))
+                        strncpy(it.pkg_name, json_object_get_string_member(iobj, "filename"), sizeof(it.pkg_name) - 1);
+
+                    if (!it.pkg_name[0] && it.url[0]) {
+                        char *base = g_path_get_basename(it.url);
+                        if (base && base[0]) {
+                            char *q = strchr(base, '?');
+                            if (q) *q = '\0';
+                            g_strlcpy(it.pkg_name, base, sizeof(it.pkg_name));
+                        }
+                        g_free(base);
+                    }
+
                     if (json_object_has_member(iobj, "size"))
                         it.size = json_object_get_int_member(iobj, "size");
 
@@ -3997,7 +4017,7 @@ static int parse_catalog_json(const char *json_data, gsize json_len, const char 
                     /* Validation rules (Step 3: name vuoto o pkg_name vuoto scartare) */
                     if (!it.name[0]) continue;
                     if (!it.pkg_name[0]) continue;
-                    if (!is_valid_pkg_name(it.pkg_name)) continue;
+                    if (!is_valid_dest_filename(it.pkg_name)) continue;
 
                     gboolean urls_valid = TRUE;
                     if (it.n_parts > 0) {
