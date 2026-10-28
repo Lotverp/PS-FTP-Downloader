@@ -749,6 +749,8 @@ static size_t ftp_read_cb(char *ptr, size_t size, size_t nmemb, void *userdata) 
  * ═══════════════════════════════════════════════════════════ */
 
 static void curl_common_opts(CURL *c, const char *url) {
+    CURL_SET(c, CURLOPT_NOSIGNAL, 1L);
+    CURL_SET(c, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     if (g_uc_last_user_agent[0]) {
         CURL_SET(c, CURLOPT_USERAGENT, g_uc_last_user_agent);
     } else {
@@ -6006,17 +6008,28 @@ static void *dlps_fetch_thread_fn(void *arg) {
     DlpsMem chunk = { malloc(1), 0 };
     int totals[2] = { 0, 0 };
 
-    /* Configure cURL with fast options and automatic decompression */
+    /* Configure cURL with IPv4 forced, thread safety and modern browser headers */
+    curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(c, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
     curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36");
     curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, (void *)&chunk);
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dlps_header_cb);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, (void *)totals);
-    curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
-    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 8L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 40L);
+    curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 1L);
+
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Accept: application/json, text/plain, */*");
+    headers = curl_slist_append(headers, "Accept-Language: it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7");
+    headers = curl_slist_append(headers, "Sec-Ch-Ua: \"Chromium\";v=\"126\", \"Not/A)Brand\";v=\"24\"");
+    headers = curl_slist_append(headers, "Sec-Fetch-Dest: empty");
+    headers = curl_slist_append(headers, "Sec-Fetch-Mode: cors");
+    headers = curl_slist_append(headers, "Sec-Fetch-Site: same-origin");
+    curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
 
     /* 1. If explicit URL or slug, attempt direct slug lookup */
     if (is_slug) {
@@ -6026,6 +6039,17 @@ static void *dlps_fetch_thread_fn(void *arg) {
 
         curl_easy_setopt(c, CURLOPT_URL, fetch_url);
         CURLcode res = curl_easy_perform(c);
+        if (res == CURLE_OPERATION_TIMEDOUT || res == CURLE_COULDNT_CONNECT) {
+            if (chunk.data) {
+                free(chunk.data);
+                chunk.data = malloc(1);
+                chunk.size = 0;
+            }
+            totals[0] = 0;
+            totals[1] = 0;
+            g_usleep(500000);
+            res = curl_easy_perform(c);
+        }
         if (res == CURLE_OK && chunk.data && chunk.size > 10) {
             const char *p = chunk.data;
             while (*p == ' ' || *p == '\r' || *p == '\n' || *p == '\t') p++;
@@ -6113,7 +6137,22 @@ static void *dlps_fetch_thread_fn(void *arg) {
 
         curl_easy_setopt(c, CURLOPT_URL, fetch_url);
         CURLcode res = curl_easy_perform(c);
-        if (res == CURLE_OK && chunk.data) {
+        if (res == CURLE_OPERATION_TIMEDOUT || res == CURLE_COULDNT_CONNECT) {
+            if (chunk.data) {
+                free(chunk.data);
+                chunk.data = malloc(1);
+                chunk.size = 0;
+            }
+            totals[0] = 0;
+            totals[1] = 0;
+            g_usleep(500000);
+            res = curl_easy_perform(c);
+        }
+
+        long http_code = 0;
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &http_code);
+
+        if (res == CURLE_OK && chunk.data && http_code == 200) {
             res_data->total_items = totals[0];
             res_data->total_pages = totals[1];
             DlpsGame *games = calloc(req->per_page, sizeof(DlpsGame));
@@ -6121,6 +6160,12 @@ static void *dlps_fetch_thread_fn(void *arg) {
                                           is_search, res_data->status_override, sizeof(res_data->status_override));
             res_data->games = games;
             res_data->count = n;
+        } else if (http_code == 429) {
+            snprintf(res_data->error_msg, sizeof(res_data->error_msg),
+                     "Troppe richieste al server (rate limit). Attendi qualche istante e riprova.");
+        } else if (http_code >= 500) {
+            snprintf(res_data->error_msg, sizeof(res_data->error_msg),
+                     "Server temporaneamente non disponibile (HTTP %ld). Riprova tra poco.", http_code);
         } else if (res == CURLE_OPERATION_TIMEDOUT) {
             snprintf(res_data->error_msg, sizeof(res_data->error_msg),
                      "Timeout connessione (server occupato). Prova a premere Invio o usa una parola chiave più precisa.");
@@ -6130,6 +6175,7 @@ static void *dlps_fetch_thread_fn(void *arg) {
         }
     }
 
+    if (headers) curl_slist_free_all(headers);
     curl_easy_cleanup(c);
     if (chunk.data) free(chunk.data);
     g_free(req);
@@ -6270,6 +6316,8 @@ static void *mediafire_resolve_thread(void *arg) {
     if (c) {
         DlpsMem chunk = { malloc(1), 0 };
         if (chunk.data) chunk.data[0] = '\0';
+        curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(c, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         curl_easy_setopt(c, CURLOPT_URL, req->url);
         curl_easy_setopt(c, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dlps_mem_write_cb);
@@ -6396,6 +6444,8 @@ static void *onefichier_resolve_thread(void *arg) {
     if (c) {
         DlpsMem chunk = { malloc(1), 0 };
         if (chunk.data) chunk.data[0] = '\0';
+        curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(c, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         curl_easy_setopt(c, CURLOPT_URL, req->url);
         char postfields[384] = "submitz=1";
         if (req->password[0]) {
@@ -6550,6 +6600,8 @@ static void *realdebrid_resolve_thread(void *arg) {
         }
         if (esc_link) curl_free(esc_link);
 
+        curl_easy_setopt(c, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt(c, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         curl_easy_setopt(c, CURLOPT_URL, "https://api.real-debrid.com/rest/1.0/unrestrict/link");
         curl_easy_setopt(c, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(c, CURLOPT_POSTFIELDS, postfields);
