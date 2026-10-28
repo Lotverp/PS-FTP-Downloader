@@ -4203,7 +4203,6 @@ static gboolean on_catalog_fetch_done(gpointer user_data) {
         gtk_drop_down_set_model(GTK_DROP_DOWN(g_catalog_cat_dropdown), G_LIST_MODEL(sl));
         gtk_drop_down_set_selected(GTK_DROP_DOWN(g_catalog_cat_dropdown), 0);
         g_signal_handlers_unblock_by_func(g_catalog_cat_dropdown, on_catalog_cat_selected, NULL);
-        g_object_unref(sl);
     }
     g_hash_table_destroy(cat_table);
 
@@ -4715,6 +4714,7 @@ static void on_catalog_search_changed(GtkSearchEntry *entry, gpointer user_data)
 static void on_catalog_cat_selected(GtkDropDown *dropdown, GParamSpec *pspec, gpointer user_data) {
     (void)pspec; (void)user_data;
     guint pos = gtk_drop_down_get_selected(dropdown);
+    if (pos == GTK_INVALID_LIST_POSITION) return;
     GListModel *model = gtk_drop_down_get_model(dropdown);
     if (model && GTK_IS_STRING_LIST(model)) {
         const char *s = gtk_string_list_get_string(GTK_STRING_LIST(model), pos);
@@ -4731,6 +4731,7 @@ static void on_catalog_cat_selected(GtkDropDown *dropdown, GParamSpec *pspec, gp
 static void on_catalog_reg_selected(GtkDropDown *dropdown, GParamSpec *pspec, gpointer user_data) {
     (void)pspec; (void)user_data;
     guint pos = gtk_drop_down_get_selected(dropdown);
+    if (pos == GTK_INVALID_LIST_POSITION) return;
     g_selected_catalog_region = (int)pos;
     if (g_catalog_cat_filter) {
         gtk_filter_changed(GTK_FILTER(g_catalog_cat_filter), GTK_FILTER_CHANGE_DIFFERENT);
@@ -4788,25 +4789,24 @@ static GtkWidget *build_catalog_page(void) {
     gtk_widget_set_hexpand(g_catalog_search_entry, TRUE);
     g_object_set(g_catalog_search_entry, "placeholder-text", "Cerca in Tools...", NULL);
 
-    g_catalog_cat_dropdown = gtk_drop_down_new(NULL, NULL);
+    GtkStringList *init_cats = gtk_string_list_new(NULL);
+    gtk_string_list_append(init_cats, "Tutte");
+    g_catalog_cat_dropdown = gtk_drop_down_new(G_LIST_MODEL(init_cats), NULL);
     gtk_widget_add_css_class(g_catalog_cat_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_catalog_cat_dropdown, FALSE);
     configure_dropdown_popover(g_catalog_cat_dropdown);
-    GtkStringList *init_cats = gtk_string_list_new(NULL);
-    gtk_string_list_append(init_cats, "Tutte");
-    gtk_drop_down_set_model(GTK_DROP_DOWN(g_catalog_cat_dropdown), G_LIST_MODEL(init_cats));
-    g_object_unref(init_cats);
-    g_signal_connect(g_catalog_cat_dropdown, "notify::selected-item", G_CALLBACK(on_catalog_cat_selected), NULL);
+    g_signal_connect(g_catalog_cat_dropdown, "notify::selected", G_CALLBACK(on_catalog_cat_selected), NULL);
 
-    GtkStringList *reg_list = gtk_string_list_new(NULL);
-    gtk_string_list_append(reg_list, "Regione: Tutte");
-    gtk_string_list_append(reg_list, "Europa (EUR)");
-    gtk_string_list_append(reg_list, "America (USA)");
-    g_catalog_reg_dropdown = gtk_drop_down_new(G_LIST_MODEL(reg_list), NULL);
+    const char *reg_strings[] = {
+        "Regione: Tutte",
+        "Europa (EUR)",
+        "America (USA)",
+        NULL
+    };
+    g_catalog_reg_dropdown = gtk_drop_down_new_from_strings(reg_strings);
     gtk_widget_add_css_class(g_catalog_reg_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_catalog_reg_dropdown, FALSE);
     configure_dropdown_popover(g_catalog_reg_dropdown);
-    g_object_unref(reg_list);
     g_signal_connect(g_catalog_reg_dropdown, "notify::selected", G_CALLBACK(on_catalog_reg_selected), NULL);
 
     GtkWidget *btn_sources = gtk_button_new_with_label("Sorgenti");
@@ -7936,6 +7936,7 @@ static void on_dlps_console_changed(GObject *gobject, GParamSpec *pspec, gpointe
     (void)gobject; (void)pspec; (void)user_data;
     if (!g_dlps_console_dropdown || !g_dlps_store) return;
     guint sel = gtk_drop_down_get_selected(GTK_DROP_DOWN(g_dlps_console_dropdown));
+    if (sel == GTK_INVALID_LIST_POSITION) return;
     if ((int)sel == g_dlps_console_filter) return;
     g_dlps_console_filter = (int)sel;
     const char *q = g_dlps_search_entry ? gtk_editable_get_text(GTK_EDITABLE(g_dlps_search_entry)) : "";
@@ -7946,6 +7947,7 @@ static void on_dlps_region_changed(GObject *gobject, GParamSpec *pspec, gpointer
     (void)gobject; (void)pspec; (void)user_data;
     if (!g_dlps_region_dropdown || !g_dlps_store) return;
     guint sel = gtk_drop_down_get_selected(GTK_DROP_DOWN(g_dlps_region_dropdown));
+    if (sel == GTK_INVALID_LIST_POSITION) return;
     if ((int)sel == g_dlps_region_filter) return;
     g_dlps_region_filter = (int)sel;
     const char *q = g_dlps_search_entry ? gtk_editable_get_text(GTK_EDITABLE(g_dlps_search_entry)) : "";
@@ -8053,38 +8055,38 @@ static GtkWidget *build_dlpsgame_page(void) {
     gtk_widget_set_focusable(btn_search, FALSE);
     g_signal_connect(btn_search, "clicked", G_CALLBACK(on_dlps_search_btn_clicked), NULL);
 
-    GtkStringList *dlps_consoles = gtk_string_list_new(NULL);
-    gtk_string_list_append(dlps_consoles, "Tutte le Console");
-    gtk_string_list_append(dlps_consoles, "PlayStation 5 (PS5)");
-    gtk_string_list_append(dlps_consoles, "PlayStation 4 (PS4)");
-    gtk_string_list_append(dlps_consoles, "PlayStation 3 (PS3)");
-    gtk_string_list_append(dlps_consoles, "PlayStation 2 (PS2)");
-    gtk_string_list_append(dlps_consoles, "PlayStation 1 (PS1 / PSX)");
-    gtk_string_list_append(dlps_consoles, "PlayStation Portable (PSP)");
-    gtk_string_list_append(dlps_consoles, "PlayStation Vita (PS Vita)");
-    gtk_string_list_append(dlps_consoles, "PlayStation Network (PSN)");
-    gtk_string_list_append(dlps_consoles, "Nintendo Switch");
-    gtk_string_list_append(dlps_consoles, "Xbox");
-    gtk_string_list_append(dlps_consoles, "PC Games");
-
-    g_dlps_console_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_consoles), NULL);
+    const char *console_strings[] = {
+        "Tutte le Console",
+        "PlayStation 5 (PS5)",
+        "PlayStation 4 (PS4)",
+        "PlayStation 3 (PS3)",
+        "PlayStation 2 (PS2)",
+        "PlayStation 1 (PS1 / PSX)",
+        "PlayStation Portable (PSP)",
+        "PlayStation Vita (PS Vita)",
+        "PlayStation Network (PSN)",
+        "Nintendo Switch",
+        "Xbox",
+        "PC Games",
+        NULL
+    };
+    g_dlps_console_dropdown = gtk_drop_down_new_from_strings(console_strings);
     gtk_widget_add_css_class(g_dlps_console_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_dlps_console_dropdown, FALSE);
     configure_dropdown_popover(g_dlps_console_dropdown);
-    g_object_unref(dlps_consoles);
     g_signal_connect(g_dlps_console_dropdown, "notify::selected", G_CALLBACK(on_dlps_console_changed), NULL);
 
-    GtkStringList *dlps_regions = gtk_string_list_new(NULL);
-    gtk_string_list_append(dlps_regions, "Tutte le Regioni");
-    gtk_string_list_append(dlps_regions, "Europa (EUR)");
-    gtk_string_list_append(dlps_regions, "America (USA)");
-    gtk_string_list_append(dlps_regions, "Giappone / Asia");
-
-    g_dlps_region_dropdown = gtk_drop_down_new(G_LIST_MODEL(dlps_regions), NULL);
+    const char *region_strings[] = {
+        "Tutte le Regioni",
+        "Europa (EUR)",
+        "America (USA)",
+        "Giappone / Asia",
+        NULL
+    };
+    g_dlps_region_dropdown = gtk_drop_down_new_from_strings(region_strings);
     gtk_widget_add_css_class(g_dlps_region_dropdown, "catalog-dropdown");
     gtk_widget_set_focusable(g_dlps_region_dropdown, FALSE);
     configure_dropdown_popover(g_dlps_region_dropdown);
-    g_object_unref(dlps_regions);
     g_signal_connect(g_dlps_region_dropdown, "notify::selected", G_CALLBACK(on_dlps_region_changed), NULL);
 
     gtk_box_append(GTK_BOX(toolbar_top), btn_back);
