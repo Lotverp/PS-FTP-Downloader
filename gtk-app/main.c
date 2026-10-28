@@ -1,12 +1,12 @@
 /*
  * P2C Downloader — GTK4 + libcurl
  *
- * Trasferisce file direttamente da qualsiasi URL HTTP(S) a una console PlayStation via FTP,
+ * Trasferisce file direttamente da qualsiasi URL HTTP(S) a una console via FTP,
  * sfruttando un ring-buffer circolare in RAM protetto da lock — zero utilizzo di disco locale.
  *
  * Modalità archivi multi-parte (.rar / .zip / .7z):
  *   Scarica le parti in una directory temporanea locale, le estrae con 7zip/unar,
- *   quindi carica il file .pkg risultante via FTP sulla PlayStation.
+ *   quindi carica il file risultante via FTP sulla console.
  *   Tutti i file temporanei vengono ripuliti al termine del trasferimento.
  *
  * Architettura multi-thread:
@@ -69,7 +69,7 @@ typedef enum {
     DL_PROBING,     /* Rilevamento: richiesta HEAD e probe dimensione su FTP */
     DL_ACTIVE,      /* Attivo: streaming in tempo reale HTTP -> pipe -> FTP */
     DL_PAUSED,      /* In pausa: sospeso su richiesta dell'utente */
-    DL_DONE,        /* Completato: file interamente trasferito su PS */
+    DL_DONE,        /* Completato: file interamente trasferito sulla console */
     DL_ERROR,       /* Errore non recuperabile automaticamente (ripristinabile) */
     DL_CANCELLED,   /* Annullato dall'utente */
     /* ── Stati specifici per archivi suddivisi ── */
@@ -205,7 +205,7 @@ static GtkWidget *g_chk_uc_enabled, *g_chk_uc_headless;
 
 /* Riferimenti dialog archivi multi-parte */
 static GtkWidget *g_arch_urls_box;   /* VBox contenente una riga GtkEntry per ciascun URL */
-static GtkWidget *g_arch_entry_name; /* Nome file finale .pkg sulla PS */
+static GtkWidget *g_arch_entry_name; /* Nome file finale sulla console */
 static GtkWidget *g_arch_entry_pass; /* Password archivio (opzionale) */
 
 /* Stato del catalogo app/homebrew e giochi */
@@ -528,11 +528,11 @@ static gboolean update_row_ui(gpointer user_data) {
             if (has_size) {
                 gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(dl->progressbar),
                     CLAMP(dl->progress / 100.0, 0.0, 1.0));
-                snprintf(info, sizeof(info), "Uploading .pkg via FTP: %s / %s  —  %s  —  %s",
+                snprintf(info, sizeof(info), "Invio via FTP: %s / %s  —  %s  —  %s",
                          sz_dl, sz_tot, spd, eta_s);
             } else {
                 gtk_progress_bar_pulse(GTK_PROGRESS_BAR(dl->progressbar));
-                snprintf(info, sizeof(info), "Uploading .pkg via FTP…  %s", sz_dl);
+                snprintf(info, sizeof(info), "Invio via FTP…  %s", sz_dl);
             }
             break;
     }
@@ -2065,7 +2065,7 @@ static int run_extract(const char *bin, const char *dir, const char *pass,
     return rc;
 }
 
-static void find_largest_pkg_recursive(const char *dir, char *best_path, off_t *best_size) {
+static void find_largest_file_recursive(const char *dir, char *best_path, off_t *best_size) {
     GDir *d = g_dir_open(dir, 0, NULL);
     if (!d) return;
     const gchar *name;
@@ -2074,8 +2074,8 @@ static void find_largest_pkg_recursive(const char *dir, char *best_path, off_t *
         struct stat st;
         if (stat(path, &st) == 0) {
             if (S_ISDIR(st.st_mode)) {
-                find_largest_pkg_recursive(path, best_path, best_size);
-            } else if (S_ISREG(st.st_mode) && g_str_has_suffix(name, ".pkg")) {
+                find_largest_file_recursive(path, best_path, best_size);
+            } else if (S_ISREG(st.st_mode)) {
                 if (st.st_size > *best_size) {
                     *best_size = st.st_size;
                     strcpy(best_path, path);
@@ -2369,23 +2369,43 @@ static void *split_archive_thread_fn_internal(void *arg) {
     }
 
     /* ────────────────────────────────────────────────────────
-     * Phase 4: locate the extracted .pkg
+     * Phase 4: locate the extracted file
      * ──────────────────────────────────────────────────────── */
-    char pkg_path[1024] = "";
+    char extracted_path[1024] = "";
     off_t best_size = -1;
-    find_largest_pkg_recursive(sa->tmp_dir, pkg_path, &best_size);
+    find_largest_file_recursive(sa->tmp_dir, extracted_path, &best_size);
 
-    if (pkg_path[0] == '\0') {
+    if (extracted_path[0] == '\0') {
         snprintf(dl->error_msg, sizeof(dl->error_msg),
-                 "No .pkg file found after extraction.");
+                 "Nessun file valido trovato dopo l'estrazione.");
         dl->status = DL_ERROR;
         post_update(dl);
         rm_dir_recursive(sa->tmp_dir);
         return NULL;
     }
 
+    /* Se il nome destinazione non ha estensione o è un archivio, usa l'estensione del file estratto */
+    char *extracted_base = g_path_get_basename(extracted_path);
+    const char *ext_dot = strrchr(extracted_base, '.');
+    if (ext_dot) {
+        const char *dest_dot = strrchr(sa->pkg_name, '.');
+        if (!dest_dot || strcasecmp(dest_dot, ".rar") == 0 || strcasecmp(dest_dot, ".zip") == 0 || strcasecmp(dest_dot, ".7z") == 0) {
+            if (dest_dot) {
+                char base_no_ext[SA_NAME_LEN];
+                g_strlcpy(base_no_ext, sa->pkg_name, sizeof(base_no_ext));
+                char *p = strrchr(base_no_ext, '.');
+                if (p) *p = '\0';
+                snprintf(sa->pkg_name, sizeof(sa->pkg_name), "%s%s", base_no_ext, ext_dot);
+            } else {
+                g_strlcat(sa->pkg_name, ext_dot, sizeof(sa->pkg_name));
+            }
+            g_strlcpy(dl->dest_name, sa->pkg_name, sizeof(dl->dest_name));
+        }
+    }
+    g_free(extracted_base);
+
     /* ────────────────────────────────────────────────────────
-     * Phase 5: FTP upload of the extracted .pkg
+     * Phase 5: FTP upload of the extracted file
      *
      * We open the file, get its size, then stream it via curl
      * using a simple file-read callback.
@@ -2401,10 +2421,10 @@ static void *split_archive_thread_fn_internal(void *arg) {
     dl->last_sample_bytes = 0;
     post_update(dl);
 
-    FILE *pkg_fp = fopen(pkg_path, "rb");
+    FILE *pkg_fp = fopen(extracted_path, "rb");
     if (!pkg_fp) {
         snprintf(dl->error_msg, sizeof(dl->error_msg),
-                 "Cannot open extracted .pkg: %s", strerror(errno));
+                 "Impossibile aprire il file estratto: %s", strerror(errno));
         dl->status = DL_ERROR;
         post_update(dl);
         return NULL;
@@ -2665,7 +2685,12 @@ static void on_url_changed(GtkEditable *editable, gpointer user_data) {
 static gboolean is_known_ext(const char *ext) {
     if (!ext) return FALSE;
     if (*ext == '.') ext++;
-    const char *known[] = {"pkg", "rar", "zip", "7z", "001", "tar", "gz", "bz2", "xz", "002", "part1", "part01", NULL};
+    const char *known[] = {
+        "pkg", "iso", "bin", "cue", "img", "xci", "nsp", "cia",
+        "chd", "cso", "wbfs", "rvz", "vpk", "3ds", "nds", "zip",
+        "rar", "7z", "tar", "gz", "bz2", "xz", "001", "002",
+        "part1", "part01", NULL
+    };
     for (int i = 0; known[i]; i++) {
         if (strcasecmp(ext, known[i]) == 0) return TRUE;
     }
@@ -2789,20 +2814,21 @@ static Download *start_single_download(const char *url,
             g_strlcpy(sa->password, password, sizeof(sa->password));
         }
 
-        char dest_pkg[SA_NAME_LEN];
-        snprintf(dest_pkg, sizeof(dest_pkg), "%s", full_name);
-        char *dot = strrchr(dest_pkg, '.');
-        if (dot) snprintf(dot, sizeof(dest_pkg) - (dot - dest_pkg), ".pkg");
-        else snprintf(dest_pkg + strlen(dest_pkg), sizeof(dest_pkg) - strlen(dest_pkg), ".pkg");
+        char dest_clean[SA_NAME_LEN];
+        snprintf(dest_clean, sizeof(dest_clean), "%s", full_name);
+        char *dot = strrchr(dest_clean, '.');
+        if (dot && (strcasecmp(dot, ".rar") == 0 || strcasecmp(dot, ".zip") == 0 || strcasecmp(dot, ".7z") == 0)) {
+            *dot = '\0';
+        }
 
-        g_strlcpy(sa->pkg_name, dest_pkg, sizeof(sa->pkg_name));
-        g_strlcpy(dl->dest_name, dest_pkg, sizeof(dl->dest_name));
+        g_strlcpy(sa->pkg_name, dest_clean, sizeof(sa->pkg_name));
+        g_strlcpy(dl->dest_name, dest_clean, sizeof(dl->dest_name));
         sa->dl_id = dl->id;
         dl->sa_args = sa;
 
         const char *base_cache_dir = g_tmp_dir[0] ? g_tmp_dir : g_get_user_cache_dir();
         char safe[64] = "";
-        g_strlcpy(safe, dest_pkg, sizeof(safe));
+        g_strlcpy(safe, dest_clean, sizeof(safe));
         for (char *p = safe; *p; p++)
             if (*p == '/' || *p == ' ' || *p == '\'' || *p == '"') *p = '_';
         snprintf(sa->tmp_dir, sizeof(sa->tmp_dir),
@@ -2836,21 +2862,17 @@ static Download *start_split_download(const char **urls, int n,
         return NULL;
     }
 
-    char final_pkg[SA_NAME_LEN] = "";
-    const char *dot = strrchr(pkg_name, '.');
-    if (dot && strcasecmp(dot, ".pkg") == 0)
-        snprintf(final_pkg, sizeof(final_pkg), "%s", pkg_name);
-    else
-        snprintf(final_pkg, sizeof(final_pkg), "%s.pkg", pkg_name);
+    char final_name[SA_NAME_LEN] = "";
+    snprintf(final_name, sizeof(final_name), "%s", pkg_name);
 
-    g_strlcpy(sa->pkg_name, final_pkg, sizeof(sa->pkg_name));
+    g_strlcpy(sa->pkg_name, final_name, sizeof(sa->pkg_name));
     if (password && password[0]) {
         g_strlcpy(sa->password, password, sizeof(sa->password));
     }
 
     const char *base_cache_dir = g_tmp_dir[0] ? g_tmp_dir : g_get_user_cache_dir();
     char safe[64] = "";
-    g_strlcpy(safe, final_pkg, sizeof(safe));
+    g_strlcpy(safe, final_name, sizeof(safe));
     for (char *p = safe; *p; p++)
         if (*p == '/' || *p == ' ' || *p == '\'' || *p == '"') *p = '_';
     snprintf(sa->tmp_dir, sizeof(sa->tmp_dir),
@@ -3091,7 +3113,7 @@ static void show_add_dialog_prefilled(GtkWindow *parent, const char *pre_url, co
 
     g_entry_url = gtk_entry_new();
     gtk_entry_set_placeholder_text(GTK_ENTRY(g_entry_url),
-                                    "https://example.com/file.pkg oppure /home/.../gioco.rar");
+                                    "https://example.com/file.pkg oppure /home/.../gioco.iso");
     gtk_widget_add_css_class(g_entry_url, "form-entry");
     gtk_widget_set_hexpand(g_entry_url, TRUE);
     g_signal_connect(g_entry_url, "changed", G_CALLBACK(on_url_changed), NULL);
@@ -3649,19 +3671,19 @@ static void show_arch_dialog(GtkWindow *parent) {
     GtkWidget *sep = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
     gtk_widget_add_css_class(sep, "form-sep");
 
-    /* ── Destination .pkg name ── */
-    GtkWidget *lbl_name = gtk_label_new("Destination .pkg filename");
+    /* ── Destination filename ── */
+    GtkWidget *lbl_name = gtk_label_new("Nome file destinazione");
     gtk_label_set_xalign(GTK_LABEL(lbl_name), 0.0);
     gtk_widget_add_css_class(lbl_name, "form-label");
 
     GtkWidget *lbl_name_hint = gtk_label_new(
-        "The .pkg extension is added automatically if omitted.");
+        "Specifica il nome desiderato con estensione, oppure lascia vuoto per rilevarlo dall'archivio.");
     gtk_label_set_xalign(GTK_LABEL(lbl_name_hint), 0.0);
     gtk_label_set_wrap(GTK_LABEL(lbl_name_hint), TRUE);
     gtk_widget_add_css_class(lbl_name_hint, "form-hint");
 
     g_arch_entry_name = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(g_arch_entry_name), "e.g. my_game");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(g_arch_entry_name), "es. my_game.pkg oppure my_game.iso");
     gtk_widget_add_css_class(g_arch_entry_name, "form-entry");
 
     /* ── Password field ── */
@@ -7046,7 +7068,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     }
 
     if (game->n_links > 0) {
-        GtkWidget *btn_auto = gtk_button_new_with_label("Scarica Automatico su PS");
+        GtkWidget *btn_auto = gtk_button_new_with_label("Scarica Automatico su Console");
         gtk_widget_add_css_class(btn_auto, "btn-primary");
         gtk_widget_set_halign(btn_auto, GTK_ALIGN_START);
         gtk_widget_set_focusable(btn_auto, FALSE);
@@ -7132,7 +7154,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
             g_strlcpy(pfd->password, game->password, sizeof(pfd->password));
             pfd->dialog = dialog;
 
-            GtkWidget *btn_dl = gtk_button_new_with_label("Scarica .PKG");
+            GtkWidget *btn_dl = gtk_button_new_with_label("Scarica Diretto");
             gtk_widget_add_css_class(btn_dl, "btn-prefill");
             gtk_widget_set_focusable(btn_dl, FALSE);
             g_signal_connect(btn_dl, "clicked", G_CALLBACK(on_prefill_download_clicked), pfd);
@@ -7242,7 +7264,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     GtkWidget *box_direct = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
     gtk_widget_add_css_class(box_direct, "direct-dl-box");
 
-    GtkWidget *lbl_dd_title = gtk_label_new("Avvia Download Diretto .PKG verso PlayStation");
+    GtkWidget *lbl_dd_title = gtk_label_new("Avvia Download Diretto verso Console");
     gtk_label_set_xalign(GTK_LABEL(lbl_dd_title), 0.0);
     gtk_widget_add_css_class(lbl_dd_title, "form-label");
     gtk_box_append(GTK_BOX(box_direct), lbl_dd_title);
@@ -7259,7 +7281,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     GtkWidget *entry_direct = gtk_entry_new();
     gtk_widget_set_hexpand(entry_direct, TRUE);
     gtk_widget_add_css_class(entry_direct, "form-entry");
-    g_object_set(entry_direct, "placeholder-text", "https://.../titolo-gioco.pkg", NULL);
+    g_object_set(entry_direct, "placeholder-text", "https://.../gioco-o-file.ext", NULL);
     gtk_box_append(GTK_BOX(row_input), entry_direct);
 
     GtkWidget *btn_paste = gtk_button_new_with_label("Incolla da Appunti");
@@ -7280,7 +7302,7 @@ static void show_dlps_game_details_dialog(GtkWindow *parent, const DlpsGame *gam
     g_strlcpy(ddd->password, game->password, sizeof(ddd->password));
     ddd->dialog = dialog;
 
-    GtkWidget *btn_start_ps = gtk_button_new_with_label("Avvia su PS");
+    GtkWidget *btn_start_ps = gtk_button_new_with_label("Avvia su Console");
     gtk_widget_add_css_class(btn_start_ps, "btn-primary");
     gtk_widget_set_focusable(btn_start_ps, FALSE);
     g_signal_connect(btn_start_ps, "clicked", G_CALLBACK(on_start_direct_dl_clicked), ddd);

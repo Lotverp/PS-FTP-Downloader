@@ -1,13 +1,15 @@
 <div align="center">
 
 # P2C Downloader
+### (PC to Console Downloader)
 
-**Download diretto di file PKG da Internet alla PlayStation in Pure Streaming — Zero spazio occupato sul PC.**
+**Download e streaming diretto di qualsiasi file, gioco o archivio da Internet a qualsiasi Console via FTP — Zero spazio occupato su PC.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-violet.svg)](LICENSE)
 [![Platform: Linux](https://img.shields.io/badge/Platform-Linux-blue.svg)](https://www.linux.org/)
 [![GTK: 4](https://img.shields.io/badge/GTK-4-green.svg)](https://gtk.org/)
 [![Built with: C](https://img.shields.io/badge/Built%20with-C-orange.svg)]()
+[![GitHub Repo](https://img.shields.io/badge/GitHub-Lotverp%2FP2C--Downloader-blue.svg)](https://github.com/Lotverp/P2C-Downloader)
 
 </div>
 
@@ -15,34 +17,42 @@
 
 ## Panoramica del Progetto
 
-**P2C Downloader** è un'applicazione nativa per Linux (scritta in C con interfaccia grafica moderna in GTK4) concepita per semplificare e velocizzare al massimo l'installazione di giochi, aggiornamenti, DLC, homebrew e archivi su console **PlayStation 4 (PS4), PlayStation 5 (PS5), PlayStation 3 (PS3) e PlayStation Vita**.
+**P2C Downloader** (**PC-to-Console Downloader**) è un'applicazione nativa per Linux ad alte prestazioni (scritta in C con interfaccia grafica moderna in GTK4) concepita per trasferire e installare giochi, aggiornamenti, DLC, homebrew, immagini disco, ROM e qualsiasi tipologia di file direttamente dal web alla tua **console o dispositivo di rete**.
 
-A differenza dei metodi tradizionali — che costringono a scaricare decine o centinaia di gigabyte sul disco del computer per poi copiarli su chiavette USB o inviarli via FTP in un secondo momento — P2C Downloader adotta una tecnologia proprietaria di **Pure RAM Ring-Buffer Streaming**:
+A differenza dei metodi tradizionali — che costringono a scaricare decine o centinaia di gigabyte sul disco del computer per poi copiarli faticosamente su chiavette USB o inviarli via FTP in un secondo momento — P2C Downloader adotta una tecnologia proprietaria di **Pure RAM Ring-Buffer Streaming**:
 
 ```
-┌──────────────┐         HTTP/HTTPS          ┌──────────────────────┐         FTP Socket         ┌──────────────────────┐
-│   INTERNET   │ ──────────────────────────► │    RAM RING-BUFFER   │ ─────────────────────────► │     PLAYSTATION      │
-│  (Direct/MF) │   Download asincrono (C)    │ (2 MB circolare atom)│    Upload asincrono (C)    │ (GoldHEN /data/pkg)  │
-└──────────────┘                             └──────────────────────┘                             └──────────────────────┘
+┌──────────────┐          HTTP / HTTPS          ┌──────────────────────┐          FTP Socket          ┌──────────────────────┐
+│   INTERNET   │ ─────────────────────────────► │    RAM RING-BUFFER   │ ──────────────────────────► │       CONSOLE        │
+│ Direct/Hoster│     Download asincrono (C)     │ (2 MB circolare atom)│      Upload asincrono (C)    │ PS3/PS4/PS5/Switch...│
+└──────────────┘                                └──────────────────────┘                             └──────────────────────┘
 ```
 
-* **Zero spazio consumato su PC**: Anche un pacchetto da 60 GB viene trasferito senza salvare un singolo byte di file temporaneo sul disco del tuo computer.
-* **Velocità massima di rete**: Il download da Internet e l'invio FTP alla PlayStation avvengono in parallelo su thread indipendenti.
-* **Niente chiavette USB formattate exFAT**: Nessun limite di capienza e nessun rischio di corruzione dei file.
+> [!IMPORTANT]
+> **Massima Versatilità — Non solo PlayStation, non solo .PKG!**
+> - **Qualsiasi Console**: P2C Downloader dialoga tramite protocollo standard FTP con qualsiasi console o dispositivo dotato di server FTP attivo: **PlayStation 4, PlayStation 5, PlayStation 3, PlayStation Vita, Nintendo Switch, Xbox, retro-console e dispositivi embedded**.
+> - **Qualsiasi Formato File**: L'applicazione non è limitata ai pacchetti `.pkg`. Supporta in streaming puro qualsiasi estensione: **`.pkg`, `.iso`, `.bin`, `.cue`, `.xci`, `.nsp`, `.cia`, `.chd`, `.cso`, `.wbfs`, `.rvz`, `.vpk`, `.zip`, `.7z`, archivi compressi, file multimediali e salvataggi**.
+
+* **Zero spazio consumato su PC**: Anche un file da 80 GB viene trasferito senza salvare un singolo byte di file temporaneo sul disco del tuo computer.
+* **Velocità massima di rete**: Il download da Internet e l'invio FTP alla console avvengono simultaneamente in parallelo su thread indipendenti protetti da lock atomici.
+* **Niente chiavette USB**: Nessun limite di capienza (come il formato FAT32 a 4 GB), nessun bisogno di partizionamento exFAT e nessun tempo di copia intermediario.
 
 ---
 
 ## Indice dei Contenuti
 1. [Funzionalità Chiave](#funzionalità-chiave)
-2. [Configurazione Dettagliata della Console](#configurazione-dettagliata-della-console)
-   - [PlayStation 4 con GoldHEN](#1-configurazione-su-ps4-con-goldhen)
-   - [PlayStation 5 con etaHEN](#2-configurazione-su-ps5-con-etahen)
-   - [PlayStation 3 con webMAN-MOD / HEN](#3-configurazione-su-ps3-con-webman-mod--hen)
+2. [Compatibilità e Configurazione Console](#compatibilità-e-configurazione-console)
+   - [PlayStation 4 (GoldHEN / hen)](#1-playstation-4-con-goldhen)
+   - [PlayStation 5 (etaHEN / ftpserver)](#2-playstation-5-con-etahen)
+   - [PlayStation 3 (webMAN-MOD / HEN / CFW)](#3-playstation-3-con-webman-mod--hen)
+   - [PlayStation Vita (VitaShell FTP)](#4-playstation-vita-con-vitashell)
+   - [Nintendo Switch (ftpd / Atmosphere)](#5-nintendo-switch-con-ftpd)
+   - [Xbox e Altre Console FTP](#6-xbox-e-altri-sistemi-con-server-ftp)
 3. [Installazione e Avvio su Linux](#installazione-e-avvio-su-linux)
 4. [Guida Completa all'Interfaccia Grafica](#guida-completa-allinterfaccia-grafica)
    - [4.1 Barra Superiore (Header Bar)](#41-barra-superiore-header-bar)
    - [4.2 Finestra: "+ Nuovo Download"](#42-finestra--nuovo-download)
-   - [4.3 Finestra: "Archivio Diviso" (Split Archive .rar)](#43-finestra-archivio-diviso-split-archive)
+   - [4.3 Finestra: "Archivio Diviso" (Split Archive .rar/.zip/.7z)](#43-finestra-archivio-diviso-split-archive)
    - [4.4 Scheda: "Sfoglia Giochi" (Catalogo DLPSGame)](#44-scheda-sfoglia-giochi-catalogo-dlpsgame)
    - [4.5 Finestra: "Dettagli Gioco" e Selezione Mirror](#45-finestra-dettagli-gioco-e-selezione-mirror)
    - [4.6 Scheda: "Tools" (Store Homebrew & Applicazioni)](#46-scheda-tools-store-homebrew--applicazioni)
@@ -59,74 +69,99 @@ A differenza dei metodi tradizionali — che costringono a scaricare decine o ce
 
 ## Funzionalità Chiave
 
-* **Architettura Pure Streaming in RAM**: Un buffer circolare atomico in memoria (circa 2 MB) fa da ponte tra il download HTTP e l'upload FTP alla console. Nessuna usura dell'SSD e nessun file residuo.
-* **Catalogo Giochi Integrato (oltre 6.500 titoli)**: Sfoglia, cerca per nome o CUSA/PPSA e scarica giochi direttamente dall'app con copertine, generi e screenshot.
-* **Algoritmo di Download Automatico Intelligente (1-Click)**: L'applicazione seleziona in autonomia la sorgente migliore con ordine di preferenza: Link Diretto PKG > Mediafire > 1Fichier > Real-Debrid > Container Protetti.
+* **Architettura Pure Streaming in RAM**: Un buffer circolare atomico in memoria (circa 2 MB) fa da ponte tra il download HTTP e l'upload FTP alla console. Nessuna usura dell'SSD e nessun file residuo sul PC.
+* **Supporto a Qualsiasi Estensione**: Streaming diretto di pacchetti `.pkg`, immagini `.iso`/`.bin`, formati Nintendo `.xci`/`.nsp`, archivi, homebrew e file generici.
+* **Catalogo Giochi Integrato (oltre 6.500 titoli)**: Sfoglia, cerca per titolo o codice (CUSA, PPSA, Title ID) con filtri per piattaforma (PS5, PS4, PS3, PS2, PS1, PSP, PS Vita, Nintendo Switch, Xbox, PC) e regione (EUR, USA, ASIA).
+* **Algoritmo di Download Automatico Intelligente (1-Click)**: L'applicazione seleziona in autonomia la sorgente migliore con ordine di preferenza: Link Diretto > Mediafire > 1Fichier > Real-Debrid > Container Protetti.
 * **Motore Anti-Bot Undetected ChromeDriver**: Bypass automatico in background di countdown timer, controlli Cloudflare e captcha (CutCaptcha con eventi mouse fisici simulati via CDP).
 * **Protezione da Pubblicità Invasiva e Popunder**: Blocco completo a livello di browser di finestre popup ingannevoli e chiusura istantanea di schede ad clickjacking.
-* **Supporto Debrid 1-Click**: Risoluzione immediata dei link 1Fichier, Rapidgator e Mega tramite API Real-Debrid, aggirando i tempi di attesa IP forzati per gli utenti non paganti.
-* **Auto-Resume dei Trasferimenti**: Se la connessione di rete cade temporaneamente o l'FTP si riavvia, l'app riprende il trasferimento dal byte esatto in cui si era interrotto (`Range: bytes` + `REST`).
-* **Gestore Archivi Divisi Multi-Volume (.part1.rar)**: Scarica automaticamente le parti, ne estrae il file `.pkg` con `7zip` locale, lo invia alla PlayStation ed elimina all'istante i file temporanei.
-* **App & Homebrew Store**: Installazione rapida con un clic degli homebrew più famosi (Itemzflow, Apollo Save Tool, PS4-Xplorer, GoldHEN Cheats Manager) con feed JSON espandibili.
+* **Supporto Real-Debrid 1-Click**: Risoluzione immediata dei link 1Fichier, Rapidgator e Mega tramite API Real-Debrid, aggirando i tempi di attesa forzati per gli utenti gratuiti.
+* **Auto-Resume dei Trasferimenti**: Se la connessione cade temporaneamente o l'FTP si riavvia, l'app riprende il trasferimento dal byte esatto in cui si era interrotto (`Range: bytes` + `REST`).
+* **Gestore Archivi Divisi Multi-Volume (.part1.rar / .zip / .7z)**: Scarica automaticamente le parti, estrae localmente il file payload contenuto (sia esso `.pkg`, `.iso`, `.bin` o qualsiasi altro formato) con `7zip`, lo invia alla console via FTP ed elimina all'istante i file temporanei.
+* **Store Homebrew & Strumenti**: Installazione rapida con un clic degli homebrew più diffusi (Itemzflow, Apollo Save Tool, PS4-Xplorer, GoldHEN Cheats Manager) con feed JSON espandibili.
 
 ---
 
-## Configurazione Dettagliata della Console
+## Compatibilità e Configurazione Console
 
-Affinché l'applicazione possa inviare i file alla PlayStation, la console e il computer devono essere collegati alla **stessa rete locale (stessa LAN o Wi-Fi)** e il server FTP della console deve essere attivo.
+Affinché l'applicazione possa inviare i file, la console di destinazione e il computer devono essere collegati alla **stessa rete locale (stessa LAN o Wi-Fi)** e il server FTP della console deve essere attivo.
 
-### 1. Configurazione su PS4 con GoldHEN
+### 1. PlayStation 4 con GoldHEN
 
 GoldHEN integra nativamente un server FTP robusto e performante (`ftpsrv`).
 
 #### Passo 1: Attivare il server FTP su PS4
-1. Accendi la PS4 e avvia l'exploit GoldHEN (firmware 5.05, 6.72, 7.02, 7.55, 9.00, 11.00 o superiori).
+1. Accendi la PS4 e avvia l'exploit GoldHEN.
 2. Dalla dashboard della PS4, entra in **Impostazioni**.
-3. In cima alla schermata seleziona la voce **GoldHEN** (oppure entra in **Debug Settings**).
+3. In cima alla schermata seleziona **GoldHEN** (oppure entra in **Debug Settings**).
 4. Entra nel sottomenu **Server Settings**.
-5. Trova la voce **Enable FTP Server** e **spunta la casella**.
-6. Non appena attivato, apparirà una notifica in alto a sinistra del tipo:
+5. Trova la voce **Enable FTP Server** e spunta la casella.
+6. Comparirà una notifica in alto a sinistra del tipo:
    ```text
    FTP Server: 192.168.1.111:2121
    ```
    * **Indirizzo IP**: È l'indirizzo della tua console (es. `192.168.1.111`).
-   * **Porta FTP**: GoldHEN utilizza come porta predefinita la **`2121`** (e NON la 21 standard, per evitare conflitti di privilegi).
+   * **Porta FTP**: GoldHEN utilizza come porta predefinita la **`2121`**.
 
-#### Passo 2: La cartella di destinazione `/data/pkg`
-Il Package Installer di GoldHEN cerca i file `.pkg` da installare all'interno della cartella interna:
+#### Passo 2: La cartella di destinazione `data/pkg`
+Il Package Installer di GoldHEN cerca i file `.pkg` all'interno della cartella:
 ```text
-/data/pkg
+data/pkg
 ```
-* **Creazione automatica**: Non devi preoccuparti di crearla a mano: aprendo le **Impostazioni** di P2C Downloader e premendo il tasto **`Test Connessione & Crea Cartella`**, il programma si connette alla console e crea automaticamente la cartella `/data/pkg` se non è ancora presente!
-* **Creazione manuale (alternativa)**: Puoi crearla anche usando un homebrew file manager sulla PS4 (come *PS4-Xplorer* o *Itemzflow*), creando la sottocartella `pkg` dentro `/data`.
-
-#### Passo 3: Come installare il gioco sulla PS4 al termine del download
-1. Quando P2C Downloader segnala **COMPLETATO** (100%), il file `.pkg` si trova già interamente nella memoria della console.
-2. Sulla PS4 vai in:
-   * **Impostazioni** ➔ **GoldHEN** ➔ **Package Installer** (oppure **Debug Settings** ➔ **Game** ➔ **Package Installer**).
-3. Vedrai comparire il file del gioco appena trasferito.
-4. Seleziona il pacchetto e premi **X** sul controller: la PS4 installerà il gioco in pochi secondi.
-5. Al termine dell'installazione, l'icona del gioco apparirà sulla schermata principale della PS4 pronta per essere avviata.
+* **Creazione automatica**: Nelle **Impostazioni** di P2C Downloader, premendo il tasto **`Test Connessione & Crea Cartella`**, l'app si connette alla console e crea automaticamente la cartella `data/pkg` se non è ancora presente.
+* **Installazione del gioco**: A download completato, vai in **Impostazioni** ➔ **GoldHEN** ➔ **Package Installer** e installa il pacchetto trasferito con il tasto **X** del controller.
 
 ---
 
-### 2. Configurazione su PS5 con etaHEN
+### 2. PlayStation 5 con etaHEN
 
 1. Avvia l'exploit PS5 e carica l'homebrew enabler **etaHEN** (oppure invia il payload `ftpserver`).
-2. Nelle impostazioni di etaHEN, assicurati che la voce **FTP Server** sia abilitata.
-3. Annota l'indirizzo IP e la porta visualizzati (su PS5 la porta è solitamente **`1337`** oppure **`2121`**).
-4. La cartella di installazione su PS5 è identica: `/data/pkg`.
-5. A download ultimato, installa il file tramite il **Package Installer** di etaHEN.
+2. Nelle impostazioni di etaHEN, verifica che la voce **FTP Server** sia abilitata.
+3. Annota l'indirizzo IP e la porta (su PS5 la porta è solitamente **`1337`** oppure **`2121`**).
+4. La cartella standard su PS5 è `data/pkg`.
+5. A trasferimento completato, installa il file dal **Package Installer** di etaHEN.
 
 ---
 
-### 3. Configurazione su PS3 con webMAN-MOD / HEN
+### 3. PlayStation 3 con webMAN-MOD / HEN
 
-1. Avvia la console con HEN o Custom Firmware (Evilnat / Rebug).
-2. Assicurati che **webMAN-MOD** sia attivo (il server FTP parte automaticamente in background all'avvio della PS3).
+1. Avvia la console con HEN o Custom Firmware (Evilnat / Cobra).
+2. Assicurati che **webMAN-MOD** sia attivo (il server FTP si avvia automaticamente in background).
 3. La porta FTP standard di webMAN-MOD è la **`21`**.
-4. La cartella standard dei pacchetti su PS3 è **`/dev_hdd0/packages`**. Nelle Impostazioni di P2C Downloader inserisci `dev_hdd0/packages` nel campo *Directory*.
-5. A trasferimento completato, installa il file dal menu XMB della PS3 in **Gioco** ➔ **Package Manager** ➔ **Install Package Files** ➔ **Standard**.
+4. Cartelle consigliate:
+   - Per pacchetti `.pkg`: imposta la directory su **`dev_hdd0/packages`**.
+   - Per giochi formato cartella / ISO: imposta la directory su **`dev_hdd0/GAMES`** o **`dev_hdd0/PS3ISO`**.
+5. A trasferimento completato, installa dal menu XMB in **Gioco** ➔ **Package Manager** ➔ **Install Package Files** ➔ **Standard** (oppure carica la ISO con webMAN-MOD).
+
+---
+
+### 4. PlayStation Vita con VitaShell
+
+1. Avvia l'homebrew **VitaShell** sulla PS Vita.
+2. Premi il tasto **SELECT** per avviare il server FTP (se configurato su modalità FTP nelle opzioni di VitaShell con il tasto START).
+3. VitaShell mostrerà a video l'IP e la porta (solitamente porta **`1337`**).
+4. Imposta la cartella desiderata in P2C Downloader (es. **`ux0:/vpk`** o **`ux0:/data`**).
+5. Trasferisci qualsiasi pacchetto `.vpk`, ROM o file multimediale. Al termine, installa il `.vpk` direttamente da VitaShell.
+
+---
+
+### 5. Nintendo Switch con ftpd
+
+1. Avvia l'homebrew **ftpd** (o **ftpd-pro**) dal menu Homebrew Launcher (Atmosphere).
+2. Sullo schermo della Switch apparirà l'indirizzo IP e la porta in ascolto (solitamente porta **`5000`**).
+3. Nelle Impostazioni di P2C Downloader:
+   - Imposta **FTP Host** sull'IP della Switch.
+   - Imposta **FTP Port** su **`5000`**.
+   - Imposta **Directory** sul percorso della microSD desiderato (es. **`switch/`**, **`install/`** o la root della scheda).
+4. Invia qualsiasi file `.nsp`, `.xci`, ROM o payload. Installalo quindi con il tuo title manager preferito (Tinfoil, DBI, Awoo Installer, Goldleaf).
+
+---
+
+### 6. Xbox e Altri Sistemi con Server FTP
+
+P2C Downloader è compatibile con qualsiasi server FTP conforme agli standard RFC 959 / 3659:
+* **Xbox Classic / Xbox 360** (con dashboard modificate come UnleashX, Avalaunch, Aurora o FSD): porta standard **`21`**.
+* **Dispositivi Raspberry Pi, PC Home Server, RetroPie, Batocera**: con server `vsftpd` o `proftpd`.
 
 ---
 
@@ -134,18 +169,18 @@ Il Package Installer di GoldHEN cerca i file `.pkg` da installare all'interno de
 
 ### Metodo 1: Pacchetto precompilato `.deb` (Consigliato per Ubuntu, Debian, Mint, Zorin)
 
-Scarica il pacchetto `.deb` rilasciato nella sezione [Releases](../../releases) oppure compilalo localmente, quindi installalo con:
+Scarica il file `.deb` più recente dalla sezione [Releases](../../releases) o compilalo localmente, quindi installalo con:
 ```bash
 sudo apt install -y ./p2c-downloader_1.3.5_amd64.deb
 ```
-L'applicazione viene integrata nel menu di sistema tra i giochi e gli strumenti di rete. Puoi avviarla dall'elenco applicazioni o digitando da terminale:
+L'applicazione si integrerà automaticamente nel menu di sistema tra le categorie Giochi e Rete. Puoi avviarla dall'elenco applicazioni o digitando da terminale:
 ```bash
 p2c-downloader
 ```
 
 ### Metodo 2: Compilazione dai sorgenti
 
-Installa le dipendenze di sistema richieste per lo sviluppo GTK4 e networking:
+Installa le librerie di sviluppo richieste:
 ```bash
 sudo apt update
 sudo apt install -y build-essential libgtk-4-dev libcurl4-openssl-dev libjson-glib-dev 7zip
@@ -163,13 +198,14 @@ Per sbloccare automaticamente i link protetti da timer, Cloudflare e CutCaptcha:
 ```bash
 pip install --user undetected-chromedriver selenium
 ```
-> *Nota: L'applicazione dispone anche di un tasto dedicato nelle **Impostazioni** che esegue questa installazione in automatico con un solo clic.* Assicurati che sul tuo PC sia installato **Google Chrome** oppure **Chromium** (`sudo apt install -y chromium-browser`).
+> [!TIP]
+> L'applicazione include un tasto dedicato nelle **Impostazioni** (**`Setup Dipendenze Undetected ChromeDriver`**) che esegue questa configurazione in autonomia con un solo clic. Assicurati che sul tuo PC sia installato **Google Chrome** oppure **Chromium** (`sudo apt install -y chromium-browser`).
 
 ---
 
 ## Guida Completa all'Interfaccia Grafica
 
-Di seguito viene analizzata dettagliatamente ogni schermata, spiegando la funzione precisa di ciascun pulsante, campo di testo, menu a tendina e opzione.
+Di seguito viene illustrata ogni schermata dell'applicazione con la spiegazione precisa di comandi, opzioni e pulsanti.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -185,21 +221,21 @@ Di seguito viene analizzata dettagliatamente ogni schermata, spiegando la funzio
 
 ### 4.1 Barra Superiore (Header Bar)
 
-* **Tasto `+ Nuovo Download`**: Apre la finestra modale per inserire un link di download singolo (URL diretto, link hoster, pagina di DLPSGame o file `.pkg` locale presente sul PC).
-* **Tasto `Archivio Diviso`**: Apre la schermata dedicata ai giochi distribuiti in più parti compresse (`.part1.rar`, `.part2.rar`...).
+* **Tasto `+ Nuovo Download`**: Apre la finestra modale per inserire un link di download singolo (URL diretto, link hoster, pagina gioco o file locale presente sul PC).
+* **Tasto `Archivio Diviso`**: Apre la schermata dedicata ai giochi o file compressi suddivisi in più parti (`.part1.rar`, `.part2.rar`, `.zip`, `.7z`...).
 * **Selettore Principale a Schede**:
   * **`Download`**: Mostra la dashboard dei trasferimenti in corso, con barre di avanzamento, velocità e statistiche in tempo reale.
-  * **`Catalogo`**: Apre lo store degli homebrew e delle utility pronte all'installazione con 1 clic sulla console.
+  * **`Catalogo`**: Apre lo store degli homebrew e delle utility pronte all'installazione rapida sulla console.
   * **`Giochi DLPS`**: Apre il catalogo interattivo con oltre 6.500 titoli, copertine, filtri per piattaforma/regione e ricerca rapida.
-* **Tasto `Sorgenti`**: Apre la finestra di gestione dei repository JSON da cui vengono lette le applicazioni del catalogo homebrew.
-* **Tasto `Impostazioni` (icona ingranaggio ⚙)**: Apre il pannello di configurazione per definire l'IP della console, la porta FTP, i percorsi, il token Real-Debrid e le opzioni del browser anti-bot.
+* **Tasto `Sorgenti`**: Apre la gestione dei repository JSON da cui vengono lette le applicazioni dello store homebrew.
+* **Tasto `Impostazioni` (icona ingranaggio ⚙)**: Apre il pannello di configurazione per definire l'IP della console, la porta FTP, i percorsi remoti, il token Real-Debrid e le opzioni del browser anti-bot.
 * **Tasto `GitHub`**: Apre la pagina ufficiale del progetto nel browser web predefinito.
 
 ---
 
 ### 4.2 Finestra: "+ Nuovo Download"
 
-Consente di aggiungere qualsiasi trasferimento manuale verso la console.
+Consente di avviare qualsiasi trasferimento diretto verso la console.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -207,10 +243,10 @@ Consente di aggiungere qualsiasi trasferimento manuale verso la console.
 ├──────────────────────────────────────────────────────────────────────┤
 │  URL File o Percorso Locale:                                         │
 │  [ https://... o percorso file                          ] [Sfoglia..]│
-│  (Rilevamento automatico tipo link o pagina gioco)                   │
+│  (Rilevamento automatico tipo link, estensione o pagina gioco)       │
 │                                                                      │
 │  Nome file destinazione:                                             │
-│  [ MioGioco.pkg                                         ]            │
+│  [ MioFile.iso                                          ]            │
 │  Lascia vuoto per usare il nome originario. Estensione automatica.   │
 │                                                                      │
 │  Password (solo se archivio compresso .rar/.zip):                    │
@@ -222,55 +258,36 @@ Consente di aggiungere qualsiasi trasferimento manuale verso la console.
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Descrizione dettagliata dei campi e dei tasti:
-
+#### Dettaglio dei campi:
 1. **Casella `URL File o Percorso Locale`**:
-   * **Link Diretto PKG**: Incolla qualsiasi URL che punti a un file `.pkg` (es. `https://server.com/gioco.pkg`). L'app avvia direttamente il ring-buffer in RAM.
-   * **Link Hoster**: Incolla collegamenti di Mediafire, 1Fichier, Pixeldrain o Datanodes. L'app risolve lo stream sottostante e lo invia alla console.
-   * **Container Protetti**: Incolla link protetti da captcha (es. `filecrypt.cc`). L'app attiva il motore UC Resolver per estrarre il mirror.
-   * **Auto-Rilevamento Pagine DLPSGame**: Se incolli l'indirizzo di una pagina gioco (es. `https://dlpsgame.com/peggle-2-magical-masters-edition-ps4-pkg/`), l'app riconosce immediatamente il link, interroga il database interno del catalogo e fa partire in automatico lo sblocco del miglior mirror e il download verso la PlayStation senza alcun intervento manuale!
-   * **File Locale**: Puoi digitare il percorso di un file presente sul tuo PC.
-2. **Tasto `Sfoglia...`**:
-   * Apre il selettore file nativo del sistema operativo per selezionare un file `.pkg`, `.rar`, `.7z` o `.zip` già presente sul disco del computer e inviarlo direttamente via FTP alla console.
-3. **Casella `Nome file destinazione`**:
-   * Definisce con quale nome il file verrà memorizzato nella cartella della PlayStation (es. `Bloodborne.pkg`).
-   * Se lasciata vuota, il programma invia una richiesta HTTP di intestazione (`HEAD`) al server web per ricavare il nome originale del file. L'estensione `.pkg` viene garantita in automatico.
-4. **Menu a tendina / Casella `Password`**:
-   * Se il file da scaricare è un archivio compresso protetto da chiave, inserisci qui la password.
-   * Il menu a tendina propone la cronologia delle ultime password usate (come `DLPSGAME.COM`).
-5. **Etichetta `Destinazione → ftp://...`**:
-   * Mostra in anteprima l'indirizzo IP, la porta e il percorso remoto su cui verrà effettuato il caricamento, per verificare al volo la corretta configurazione.
-6. **Tasto `Avvia Download`**:
-   * Convalida i dati, crea i thread asincroni di ricezione HTTP e invio FTP e aggiunge il processo alla scheda dei download attivi.
-7. **Tasto `Annulla`**:
-   * Chiude la finestra senza avviare alcuna operazione.
+   * **Link Diretto**: Incolla qualsiasi URL che punti direttamente a un file (`.pkg`, `.iso`, `.bin`, `.zip`, `.xci`, `.nsp`, ecc.). L'app avvia istantaneamente lo streaming dal ring-buffer in RAM alla console.
+   * **Link Hoster**: Incolla collegamenti di Mediafire, 1Fichier, Pixeldrain o Datanodes. L'app risolve lo stream sottostante e lo convoglia alla console.
+   * **Container Protetti**: Incolla link protetti da captcha (es. FileCrypt). L'app attiva il motore UC Resolver per estrarre il mirror migliore.
+   * **Auto-Rilevamento Pagine Web**: Incollando l'indirizzo di una pagina informativa o di un aggregatore (es. DLPSGame), l'app riconosce il link, estrae i mirror e avvia il download senza interventi manuali.
+   * **File Locale**: Puoi digitare o selezionare il percorso di un file già presente sul tuo computer.
+2. **Tasto `Sfoglia...`**: Apre il selettore file nativo per scegliere un file sul disco del PC e inviarlo direttamente via FTP alla console.
+3. **Casella `Nome file destinazione`**: Nome con cui memorizzare il file sulla console. Se lasciata vuota, il nome viene ricavato automaticamente dall'URL o dall'intestazione HTTP `Content-Disposition`.
+4. **Casella / Menu `Password`**: Password di scompattazione se il file è un archivio protetto.
+5. **Etichetta `Destinazione → ftp://...`**: Anteprima visiva dell'indirizzo IP, porta e directory remota configurati.
+6. **Tasto `Avvia Download`**: Inizia lo streaming asincrono.
 
 ---
 
 ### 4.3 Finestra: "Archivio Diviso" (Split Archive)
 
-Molti portali distribuiscono giochi di grandi dimensioni suddivisi in molteplici volumi RAR (es. `gioco.part1.rar`, `gioco.part2.rar`... fino a 10 o 20 parti da 4 GB ciascuna). Questa schermata automatizza l'intero processo.
+Molti archivi e portali distribuiscono giochi di grandi dimensioni suddivisi in molteplici volumi compressi (es. `gioco.part1.rar`, `gioco.part2.rar`... fino a decine di parti). Questa schermata automatizza l'intero ciclo di vita:
 
-#### Come si comporta l'app con gli archivi divisi:
-1. Scarica in sequenza o in parallelo le parti nella cartella temporanea (`Temp Dir`).
-2. Quando tutte le parti sono disponibili, lancia internamente `7zip` per estrarre il file `.pkg`.
-3. Non appena il file `.pkg` è pronto, avvia il caricamento via FTP sulla console.
-4. **Auto-Pulizia Completa**: Appena l'upload su PlayStation è terminato con successo, l'app cancella automaticamente tutti i file RAR scaricati e i file estratti temporanei, liberando all'istante lo spazio sul tuo computer.
-
-#### Campi e pulsanti disponibili:
-* **Slot `Part 1`, `Part 2`...**: Caselle individuali dove incollare i singoli URL di ciascuna parte dell'archivio.
-* **Tasto `+ Add URL`**: Aggiunge una nuova riga numerata per archivi composti da 3, 4 o decine di parti.
-* **Tasto `Incolla da Appunti`**: Se hai copiato un blocco di righe contenenti gli indirizzi delle varie parti, questo tasto popola automaticamente tutti gli slot con un solo clic.
-* **Tasto `Sfoglia File...`**: Consente di selezionare parti già salvate in locale sul computer.
-* **Casella `Destination .pkg filename`**: Il nome desiderato per il gioco estratto (es. `GranTurismo7.pkg`).
-* **Casella `Archive password`**: Password dell'archivio compresso (se presente).
-* **Tasto `Start` / `Avvia su PS`**: Dà inizio alla catena di download, estrazione, streaming e pulizia.
+1. **Download Sequenziale o Parallelo**: Scarica le parti nella cartella temporanea locale (`Temp Dir`).
+2. **Estrazione con 7-Zip**: Scompatta automaticamente l'archivio multi-volume.
+3. **Individuazione Intelligente del Payload**: Riconosce automaticamente il file principale estratto (che sia un pacchetto `.pkg`, un'immagine disco `.iso`, un binario `.bin` o qualsiasi altro formato) e ne adotta la relativa estensione.
+4. **Upload FTP verso la Console**: Trasferisce il file finale sulla console.
+5. **Auto-Pulizia Completa**: Appena l'upload termina con successo, l'app **cancella all'istante tutti i file RAR scaricati e i file estratti temporanei**, restituendo il 100% dello spazio sul PC.
 
 ---
 
 ### 4.4 Scheda: "Sfoglia Giochi" (Catalogo DLPSGame)
 
-Offre una panoramica visuale e completa di oltre **6.500 giochi** per console PlayStation e retro-console.
+Offre una panoramica visuale e completa di oltre **6.500 giochi** per console moderne e retro-console.
 
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
@@ -289,121 +306,82 @@ Offre una panoramica visuale e completa di oltre **6.500 giochi** per console Pl
 ```
 
 #### Filtri e Controlli:
-* **Casella di Ricerca**: Digita il titolo del gioco (es. `Spider-Man`) o il codice identificativo della versione (es. `CUSA02299`, `PPSA01456`). Premendo `Invio` o il tasto `Cerca`, i risultati compaiono istantaneamente.
-* **Menu a tendina `Piattaforma`**: Permette di filtrare i giochi per sistema di appartenenza:
-  * **Tutte le Piattaforme**
-  * **PS5** (PlayStation 5)
-  * **PS4** (PlayStation 4)
-  * **PS3** (PlayStation 3)
-  * **PS2** (PlayStation 2 Classics)
-  * **PS1 / PSX** (Classici PlayStation 1)
-  * **PSP** (PlayStation Portable)
-  * **PS Vita**
-  * **Nintendo Switch / Xbox / PC**
-* **Menu a tendina `Regione`**: Filtra per mercato di distribuzione:
-  * **Tutte le Regioni**
-  * **EUR** (Europa / Multilingua con Italiano)
-  * **USA** (Nord America)
-  * **JPN / ASIA** (Giappone e Asia)
-* **Tasto `Cerca`**: Esegue l'interrogazione filtrata.
-* **Tasto `Aggiorna` (🔄)**: Riscarica l'indice più recente dal catalogo remoto.
-* **Pulsanti di Paginazione (`◀ Precedente` / `Successivo ▶`)**: Naviga tra le pagine del catalogo con contatore totale di titoli e pagine.
-* **Tasto `Torna ai Download`**: Torna istantaneamente alla scheda dei trasferimenti attivi.
-
-#### Azioni sulle Card dei Giochi:
-* **Tasto `Scarica Subito`**: Avvia immediatamente l'algoritmo intelligente di download 1-Click: seleziona il mirror migliore, bypassa le protezioni e comincia a trasferire il file sulla console senza mostrare ulteriori dialoghi.
-* **Tasto `Dettagli`**: Apre la finestra informativa avanzata del titolo.
+* **Casella di Ricerca**: Ricerca per titolo o codice identificativo (es. `CUSA`, `PPSA`, Title ID).
+* **Filtro Piattaforma**:
+  * Tutte le Console
+  * PlayStation 5 (PS5)
+  * PlayStation 4 (PS4)
+  * PlayStation 3 (PS3)
+  * PlayStation 2 (PS2)
+  * PlayStation 1 (PS1 / PSX)
+  * PlayStation Portable (PSP)
+  * PlayStation Vita (PS Vita)
+  * Nintendo Switch
+  * Xbox
+  * PC Games
+* **Filtro Regione**: EUR, USA, JPN/ASIA, Tutte le Regioni.
+* **Tasto `Scarica Subito`**: Avvia l'algoritmo 1-Click: seleziona il mirror migliore, bypassa eventuali protezioni e avvia lo streaming alla console senza passaggi intermedi.
+* **Tasto `Dettagli`**: Apre la finestra avanzata con screenshot, mirror dettagliati e opzioni Debrid.
 
 ---
 
 ### 4.5 Finestra: "Dettagli Gioco" e Selezione Mirror
 
-Si apre cliccando su un gioco per esaminarne i dettagli e scegliere manualmente la sorgente desiderata.
-
-* **Banner e Screenshot**: Mostra la copertina e una galleria di screenshot promozionali ad alta definizione.
-* **Metadati**: Riporta il genere (es. *Action-RPG*), l'anno di uscita, la regione, il codice Title ID (`CUSAxxxxx`) e l'eventuale password dell'archivio.
-* **Tasto `Copia Password`**: Copia con un clic la password del gioco (es. `DLPSGAME.COM`) negli appunti di sistema.
-* **Tasto `Scarica Automatico su PS`**:
-  * Il pulsante più potente della schermata: avvia la cascata di risoluzione intelligente che testa i link disponibili in ordine di affidabilità e velocità, risolve i captcha se presenti e fa partire lo stream verso la console.
-* **Tasto `Apri Pagina Web`**: Apre la pagina ufficiale del gioco sul sito aggregatore nel browser predefinito.
-* **Sezione Mirror & Hoster (Elenco Link)**:
-  * Ciascun link disponibile è catalogato con un'etichetta visiva colorata:
-    * `DIRETTO`: Link diretto a un file `.pkg`. Include il tasto **`Scarica .PKG`**.
-    * `MEDIAFIRE`: Hosting ad altissima velocità. Include il tasto **`Risolvi e Scarica`** (estrae lo stream diretto in 0.6 secondi) e il tasto **`Apri nel Browser`**.
-    * `1FICHIER`: Hosting popolare. Include il tasto **`Risolvi 1Fichier`**, il tasto **`Debrid 1-Click`** (se configurato Real-Debrid) e **`Apri Pagina`**.
-    * `PROTETTO` / `HOSTER`: Link protetto da container (es. FileCrypt) o link shortener. Include il tasto **`Sblocca con UC`** (avvia Undetected ChromeDriver), **`Debrid 1-Click`**, **`Apri Pagina`** e **`Copia`**.
-* **Sezione "Avvia Download Diretto .PKG verso PlayStation"**:
-  * Permette di incollare un link sbloccato manualmente o generato esternamente. Dispone del tasto **`Incolla da Appunti`**, del tasto **`Sfoglia File...`** e del tasto **`Avvia su PS`**.
+* **Metadati e Copertine**: Dettagli su genere, anno, codice identificativo e password dell'archivio (con tasto per copiarla).
+* **Tasto `Scarica Automatico su Console`**: Attiva la cascata intelligente che prova i vari hoster in ordine di qualità e velocità.
+* **Elenco Link & Hoster**:
+  * `DIRETTO`: Tasto **`Scarica Diretto`**.
+  * `MEDIAFIRE`: Tasto **`Risolvi e Scarica`** (estrae lo stream in 0.6 secondi) e tasto **`Apri nel Browser`**.
+  * `1FICHIER`: Tasto **`Risolvi 1Fichier`**, tasto **`Debrid 1-Click`** e **`Apri Pagina`**.
+  * `PROTETTO` / `HOSTER`: Sblocco con UC Resolver, Debrid o browser.
+* **Sezione "Avvia Download Diretto verso Console"**: Casella per incollare link diretti generati esternamente e avviarli all'istante verso la console.
 
 ---
 
 ### 4.6 Scheda: "Tools" (Store Homebrew & Applicazioni)
 
-Consente di installare sulla PlayStation gli strumenti e gli homebrew essenziali senza dover cercare i file PKG su Internet:
-
-* **Applicazioni incluse**:
-  * **Itemzflow Game Manager**: Il più celebre backup loader e dashboard alternativa con supporto a cover 3D, trailer e patch 60 FPS.
-  * **Apollo Save Tool**: Strumento indispensabile per gestire, sbloccare, esportare e scaricare salvataggi di gioco e trofei.
-  * **PS4-Xplorer**: File manager completo per esplorare l'hard disk interno della console, dispositivi USB e partizioni di sistema.
-  * **GoldHEN Cheats Manager**: Gestore e scaricatore automatico di cheat code e patch a 60 FPS per migliaia di giochi PS4.
-  * **RetroArch**: Frontend universale per emulare PS1, PSP, SNES, Megadrive, GBA, Arcade e decine di altri sistemi.
-* **Tasto `Installa`**: Ogni applicazione ha un pulsante dedicato che scarica l'ultima versione ufficiale rilasciata dagli sviluppatori e la invia direttamente via streaming FTP alla console.
-* **Tasto `Aggiorna`**: Ricarica la lista dei tool dai repository ufficiali.
-* **Tasto `Sorgenti`**: Permette di aggiungere repository personalizzati.
+Consente di installare sulla console gli strumenti e gli homebrew essenziali con un clic:
+* **Itemzflow Game Manager**: Backup loader avanzato con cover 3D e patch.
+* **Apollo Save Tool**: Gestore completo di salvataggi, trofei e trucchi.
+* **PS4-Xplorer / File Manager**: Gestione del file system della console.
+* **GoldHEN Cheats Manager**: Cheat e trainer a 60 FPS.
+* **RetroArch**: Frontend universale di emulazione.
 
 ---
 
 ### 4.7 Finestra: "Gestione Sorgenti" (Repository Feed)
 
-Accessibile premendo il tasto **`Sorgenti`** nell'header bar o nella scheda dei Tools.
-* **Elenco Sorgenti Attive**: Mostra gli indirizzi dei file feed JSON attualmente caricati.
-* **Casella di Testo per Nuovo Repository**: Inserisci l'URL di un feed JSON compatibile (creato da te o dalla community).
-* **Tasto `Aggiungi`**: Memorizza la nuova sorgente nell'elenco.
-* **Tasto `Rimuovi`**: Elimina un repository selezionato.
-* **Tasto `Aggiorna Tools Adesso`**: Interroga immediatamente tutte le sorgenti attive e aggiorna l'elenco delle applicazioni disponibili.
+Permette di aggiungere o rimuovere feed JSON personalizzati della community per ampliare il catalogo degli homebrew e delle utility installabili.
 
 ---
 
 ### 4.8 Scheda: "Download Attivi" (Monitoraggio e Coda)
 
-La centrale di controllo dove seguire l'avanzamento dei trasferimenti in corso:
-
 ```
 ┌────────────────────────────────────────────────────────────────────────────────────────┐
-│  Download attivi: 1    •    Velocità totale: 48.2 MB/s    •    Avanzamento: 65%        │
+│  Download attivi: 1    •    Velocità totale: 52.4 MB/s    •    Avanzamento: 65%        │
 ├────────────────────────────────────────────────────────────────────────────────────────┤
-│  Bloodborne_GOTY_v1.09.pkg                                                             │
+│  MioGioco_Aggiornato.iso                                                               │
 │  [Download in corso...]                                                                │
 │  [█████████████████████████████████████████░░░░░░░░░░░░] 65%                           │
-│  24.8 GB / 38.2 GB  •  Velocità: 48.2 MB/s  •  ETA: 4 min 38 sec           [Annulla]   │
+│  24.8 GB / 38.2 GB  •  Velocità: 52.4 MB/s  •  ETA: 4 min 12 sec           [Annulla]   │
 └────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Elementi della Dashboard:
-* **Barra di Riepilogo Globale**:
-  * Numero di download simultanei attivi.
-  * **Velocità aggregata di trasmissione** verso la PlayStation espressa in MB/s.
-  * Percentuale complessiva della coda.
-* **Scheda del Singolo Trasferimento**:
-  * **Titolo del Gioco e Nome File**: L'identificativo esatto del pacchetto in trasferimento.
-  * **Badge di Stato Dinamico**:
-    * `In coda`: Il trasferimento attende che uno slot simultaneo si liberi.
-    * `Download in corso...`: Streaming attivo tra Internet, RAM e PlayStation.
-    * `Estrazione archivio...`: Decompressione locale delle parti RAR in corso.
-    * `Invio FTP...`: Upload del file estratto verso la console.
-    * `Completato`: Il file è stato inviato al 100% ed è pronto per l'installazione su PS4/PS5.
-    * `Errore`: Segnala eventuali problemi (connessione persa, spazio su disco console esaurito, ecc.).
-  * **Barra di Avanzamento Grafica**: Indicatore percentuale fluido.
-  * **Statistiche di Trasferimento**: Dimensione trasferita rispetto al totale (es. `12.4 GB / 40.1 GB`).
-  * **Velocità Istantanea ed ETA**: Velocità attuale di upload (MB/s) e stima del tempo rimanente al completamento (minuti e secondi).
-  * **Tasto `Annulla`**: Interrompe immediatamente il trasferimento, chiude i socket FTP e libera la memoria RAM.
-  * **Tasto `Rimuovi`**: Pulisce la card dall'elenco una volta completato il trasferimento.
+* **Statistiche Globali**: Velocità aggregata di rete verso la console (MB/s), percentuale complessiva e numero di download.
+* **Stati del Trasferimento**:
+  * `In coda`: In attesa del proprio turno.
+  * `Download in corso...`: Pure streaming attivo tra Internet, RAM e console.
+  * `Estrazione archivio...`: Decompressione locale delle parti multi-volume.
+  * `Invio via FTP...`: Caricamento del payload estratto verso la console.
+  * `Completato`: File integralmente trasferito e pronto sulla console.
+  * `Errore`: Segnalazione dettagliata dell'anomalia (es. spazio esaurito sulla console o timeout).
 
 ---
 
 ### 4.9 Finestra: "Impostazioni" (FTP Settings e Anti-Bot)
 
-Si apre cliccando sull'icona dell'ingranaggio **⚙** nella barra superiore. Questa finestra racchiude la configurazione fondamentale dell'applicazione:
+Accessibile tramite l'icona dell'ingranaggio **⚙**:
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -438,98 +416,68 @@ Si apre cliccando sull'icona dell'ingranaggio **⚙** nella barra superiore. Que
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
-#### Spiegazione di ogni singolo campo e tasto:
-
-1. **`FTP Host`**:
-   * L'indirizzo IP locale assegnato dal router alla tua PlayStation (es. `192.168.1.111`).
-   * *Consiglio*: Imposta un indirizzo IP statico o riserva DHCP sul router per la PlayStation, così che l'indirizzo rimanga sempre identico.
-2. **`FTP Port`**:
-   * La porta su cui il server FTP della console è in ascolto.
-   * Per **PS4 con GoldHEN**: inserisci **`2121`**.
-   * Per **PS5 con etaHEN**: inserisci **`1337`** o **`2121`**.
-   * Per **PS3 con webMAN-MOD**: inserisci **`21`**.
-3. **`Directory`**:
-   * La cartella remota della console in cui depositare i file `.pkg`.
-   * Per **PS4 e PS5**: imposta **`data/pkg`** (è la cartella standard scansionata dal Package Installer di GoldHEN ed etaHEN).
-   * Per **PS3**: imposta **`dev_hdd0/packages`**.
-4. **`Username`**:
-   * Il nome utente per l'accesso FTP. Di default è **`anonymous`** (GoldHEN non richiede credenziali speciali).
-5. **`Password`**:
-   * La password per l'accesso FTP (lascia vuoto per GoldHEN).
-6. **`Temp Dir (Arch)`**:
-   * La cartella sul tuo computer utilizzata temporaneamente durante il download e l'estrazione degli archivi `.rar` multi-volume. Di default usa la cache utente (`~/.cache`).
-7. **`Saved Passwords`**:
-   * Elenco di password predefinite (separate da virgola) che compariranno automaticamente nei menu a tendina delle finestre di download (es. `DLPSGAME.COM, dlpsgame.com`).
-8. **`Real-Debrid Token (Opzionale)`**:
-   * Incolla qui il tuo token API personale di Real-Debrid per sbloccare istantaneamente gli hoster a pagamento e aggirare i limiti di attesa IP di 1Fichier.
-9. **Tasto `Test Connessione & Crea Cartella`**:
-   * **Cosa fa**: Tenta una connessione FTP immediata all'IP e alla porta specificati. Esegue il login e verifica se la cartella di destinazione (es. `/data/pkg`) esiste sulla console; se non esiste, la **crea automaticamente da remoto**!
-   * Mostra a video l'esito del test (es. *Connesso con successo! Cartella verificata* oppure *Errore: Timeout o porta errata*).
-10. **Sezione Undetected ChromeDriver**:
-    * **Etichetta di Stato**: Controlla in tempo reale e segnala se Python 3, Selenium, undetected-chromedriver e il browser Google Chrome/Chromium sono installati nel sistema.
-    * **Casella di Spunta `Abilita Undetected ChromeDriver`**: Se attivata, consente all'app di lanciare il browser in background per superare Cloudflare, captcha e timer forzati durante il download automatico.
-    * **Casella di Spunta `Modalità Headless`**: Se attivata, il browser anti-bot gira in background senza aprire finestre visibili sul monitor. Se disattivata, puoi vedere la finestra del browser mentre naviga e risolve le pagine.
-    * **Tasto `Setup Dipendenze Undetected ChromeDriver`**: Installa automaticamente con un clic i pacchetti Python necessari (`pip install undetected-chromedriver selenium`) e verifica la configurazione del browser.
-11. **Tasto `Save`**:
-    * Salva tutte le impostazioni in modo permanente nel file di configurazione `~/.config/p2c-downloader/settings.ini`.
-12. **Tasto `Cancel`**:
-    * Chiude le impostazioni scartando eventuali modifiche non salvate.
+#### Descrizione opzioni:
+* **`FTP Host`**: Indirizzo IP locale assegnato dal router alla console (es. `192.168.1.111`).
+* **`FTP Port`**: Porta FTP della console:
+  * PS4 GoldHEN: **`2121`**
+  * PS5 etaHEN: **`1337`** o **`2121`**
+  * PS3 webMAN-MOD: **`21`**
+  * PS Vita VitaShell: **`1337`**
+  * Nintendo Switch ftpd: **`5000`**
+* **`Directory`**: Cartella remota sulla console (es. `data/pkg`, `dev_hdd0/packages`, `switch/`, ecc.).
+* **`Username` / `Password`**: Credenziali FTP (di default `anonymous` con password vuota).
+* **`Temp Dir (Arch)`**: Cartella locale temporanea utilizzata solo per la scompattazione di archivi multi-volume prima dell'invio.
+* **`Test Connessione & Crea Cartella`**: Verifica all'istante la raggiungibilità della console e crea da remoto la cartella di destinazione se non esiste.
+* **`Setup Dipendenze Undetected ChromeDriver`**: Configura con un clic l'ambiente Python e i moduli anti-bot.
 
 ---
 
 ## Tecnologia Anti-Bot: Undetected ChromeDriver
 
-I siti aggregatori di giochi proteggono spesso i propri mirror con sistemi di protezione avanzati (Cloudflare Turnstile, CutCaptcha, countdown forzati o link-shortener). I tradizionali scraper HTTP falliscono sistematicamente su queste pagine.
+I siti aggregatori proteggono spesso i propri mirror con sistemi di verifica bot avanzati (Cloudflare Turnstile, CutCaptcha, countdown forzati o link shortener). I tradizionali scraper falliscono sistematicamente su queste pagine.
 
-**P2C Downloader** include un motore intelligente basato su Selenium e ChromeDriver non rilevabile (`gtk-app/uc_resolver.py`):
+**P2C Downloader** integra un motore intelligente headless basato su Selenium e ChromeDriver non rilevabile (`gtk-app/uc_resolver.py`):
 
 ```
-Link Protetto ──► [UC Resolver] ──► Blocco Popunder ──► Evasione Honeypot ──► Input Biometrico CDP ──► Stream Diretto PKG
+Link Protetto ──► [UC Resolver] ──► Blocco Popunder ──► Evasione Honeypot ──► Input Biometrico CDP ──► Stream Diretto Console
 ```
 
-1. **Blocco Rigido dei Popunder Pubblicitari**:
-   * I siti di file hosting aprono popunder e pagine pubblicitarie ingannevoli. Il resolver configura Chromium con le preferenze `"profile.default_content_setting_values.popups": 2`, bloccando l'apertura di finestre indesiderate sul nascere.
-   * La funzione `close_rogue_ad_windows` chiude attivamente qualsiasi scheda ad estranea, evitando che l'applicazione scambi un sito pubblicitario per un link di download.
-2. **Evasione delle Trappole Antibot ("Honeypot")**:
-   * Siti come FileCrypt inseriscono link trappola invisibili nel codice HTML (es. `<a href="/Link/1" style="display:none;"></a>`) creati appositamente per bloccare gli scraper automatici. Il resolver riconosce ed elude queste trappole, interagendo solo con i veri bottoni di sblocco.
-3. **Input Biometrico Nativo CDP**:
-   * L'interazione con i controlli captcha (es. CutCaptcha) non usa injection JavaScript rilevabili, ma invia comandi hardware simulati tramite il Chrome DevTools Protocol (`Input.dispatchMouseEvent`) con coordinate reali ed eventi contrassegnati da `isTrusted: true`.
-4. **Rilevamento File Rimosso / DMCA**:
-   * Se un file è stato cancellato dal fornitore di hosting (es. Mediafire `error.php?errno=386`), il resolver lo rileva all'istante segnalando `FILE_REMOVED`, permettendo all'applicazione di passare automaticamente al mirror alternativo successivo.
-5. **Meccanismo di Riserva "Clipboard Watcher"**:
-   * Se una protezione richiede un'interazione visiva umana imprevista, l'app apre la pagina nel browser e attiva il monitor degli appunti: appena l'utente supera il controllo e copia il link finale, **il programma lo intercetta da solo negli appunti e avvia immediatamente lo streaming verso la PlayStation!**
+1. **Blocco Totale dei Popunder**: I popup pubblicitari ingannevoli vengono bloccati a livello del browser con `"profile.default_content_setting_values.popups": 2`, e le schede pubblicitarie ad apertura imprevista vengono chiuse all'istante.
+2. **Evasione Honeypot**: Riconosce i link trappola invisibili inseriti dai siti per bloccare i bot automatici e interagisce solo con i pulsanti reali.
+3. **Eventi Hardware CDP**: Le interazioni con i captcha non avvengono tramite JavaScript iniettato, ma mediante comandi hardware simulati con Chrome DevTools Protocol (`Input.dispatchMouseEvent`) con coordinate fisiche realistiche ed eventi `isTrusted: true`.
+4. **Clipboard Watcher**: Nel caso eccezionale di protezioni con interazione visiva manuale, l'app monitora gli appunti: non appena copi il link finale nel browser, **P2C Downloader lo intercetta da solo e avvia subito lo streaming verso la console!**
 
 ---
 
 ## Integrazione Real-Debrid
 
-Se possiedi un account Real-Debrid, puoi sfruttare la massima velocità e il bypass dei limiti di banda:
-
+Se possiedi un account Real-Debrid:
 1. Visita [real-debrid.com/apitoken](https://real-debrid.com/apitoken) e copia il tuo token API personale.
-2. Apri le **Impostazioni** di P2C Downloader e incolla la chiave nel campo `Real-Debrid Token`. Premi **Save**.
-3. **Vantaggi Immediati**:
-   * **Bypass del limite di attesa 1Fichier**: 1Fichier impone agli utenti gratuiti un'attesa forzata di 60-90 minuti tra un download e l'altro (*"Without subscription you must wait..."*). Se il token Debrid è presente, P2C Downloader rileva il limite e genera istantaneamente il link diretto ad alta velocità tramite Real-Debrid in meno di 0.3 secondi!
-   * **Sblocco 1-Click Multi-Hoster**: Dalla scheda dettagli di qualsiasi gioco puoi cliccare sul pulsante **`Debrid 1-Click`** accanto a link Rapidgator, Mega, Datanodes o 1Fichier per avviare il trasferimento alla massima velocità della tua connessione.
+2. Nelle **Impostazioni** di P2C Downloader, incolla il token nel campo `Real-Debrid Token` e premi **Save**.
+3. **Vantaggi**:
+   * **Bypass del limite 1Fichier**: 1Fichier impone agli utenti non paganti attese forzate di 60-90 minuti. Con Real-Debrid configurato, P2C Downloader genera istantaneamente il link diretto ad alta velocità in meno di 0.3 secondi!
+   * **Velocità Piena Multi-Hoster**: Sblocca link Rapidgator, Mega, Datanodes e 1Fichier alla massima velocità della tua connessione Internet.
 
 ---
 
 ## Consigli per la Massima Velocità di Trasferimento
 
-La velocità di trasferimento verso la PlayStation dipende dalla connessione locale tra il tuo computer e la console:
+La velocità di streaming verso la console dipende dalla connessione locale tra il tuo PC e la console:
 
-| Tipo di Connessione | Velocità Media Tipica | Tempo per un PKG da 40 GB |
+| Tipo di Connessione | Velocità Media Tipica | Tempo stimato per 40 GB |
 |---|---|---|
-| **Cavo Ethernet Gigabit (Consigliato)** | **80 – 115 MB/s** | **~ 6 – 8 minuti** |
+| **Cavo Ethernet Gigabit LAN (Consigliato)** | **80 – 115 MB/s** | **~ 6 – 8 minuti** |
 | Wi-Fi 5 GHz (segnale eccellente) | 25 – 45 MB/s | ~ 15 – 25 minuti |
 | Wi-Fi 2.4 GHz | 8 – 15 MB/s | ~ 45 – 80 minuti |
 
-> **Suggerimento d'oro**: Per trasferimenti ultra-rapidi, collega sia il PC sia la PlayStation al router tramite **cavo di rete Ethernet LAN (Cat 5e o Cat 6)**. In questo modo sfrutterai la banda Gigabit piena saturando la velocità massima del disco della console.
+> [!TIP]
+> **Consiglio per il massimo delle prestazioni**: Per saturare la banda Gigabit e la velocità di scrittura del disco della console, collega sia il PC sia la console al router con un **cavo di rete Ethernet LAN (Cat 5e, Cat 6 o superiore)**.
 
 ---
 
 ## Script Standalone da Terminale (CLI)
 
-Per chi utilizza distribuzioni Linux server headless (senza interfaccia grafica) o gestisce i trasferimenti tramite SSH, il repository include lo script standalone bash [`p2c-download.sh`](p2c-download.sh):
+Per distribuzioni Linux server headless (senza interfaccia grafica) o per chi gestisce i trasferimenti da remoto tramite SSH, il repository include lo script standalone bash [`p2c-download.sh`](p2c-download.sh):
 
 ```bash
 # Rendi lo script eseguibile
@@ -543,37 +491,41 @@ chmod +x p2c-download.sh
 ```bash
 sudo apt install -y curl wget pv
 ```
-Lo script accetta la configurazione della console impostando le variabili `FTP_HOST` e `FTP_PORT` o passando i parametri direttamente da riga di comando.
+Lo script consente di configurare la destinazione tramite le variabili d'ambiente `FTP_HOST`, `FTP_PORT` e `FTP_DIR`:
+```bash
+FTP_HOST=192.168.1.150 FTP_PORT=5000 FTP_DIR="switch/" ./p2c-download.sh
+```
 
 ---
 
 ## Risoluzione dei Problemi e Domande Frequenti (FAQ)
 
 ### 1. Il programma restituisce "Errore di connessione FTP" o va in timeout
-* **Verifica che la console sia accesa**: Il server FTP della PlayStation si interrompe se la console entra in modalità riposo o viene spenta.
-* **Verifica che il server FTP sia abilitato**: Su PS4, controlla in *Impostazioni ➔ GoldHEN ➔ Server Settings* che la casella *Enable FTP Server* sia spuntata.
-* **Verifica l'indirizzo IP e la porta**: Controlla che l'IP nelle Impostazioni coincida con quello mostrato dalla notifica di GoldHEN e che la porta sia impostata su **`2121`** (su PS4) o **`1337`** (su PS5).
-* **Firewall di Linux**: Se hai un firewall attivo sul computer (come `ufw`), consenti il traffico verso la console con `sudo ufw allow out to any port 2121 proto tcp`.
+* **Verifica che la console sia accesa**: Il server FTP della console si interrompe se la console entra in modalità riposo o viene spenta.
+* **Verifica che il server FTP sia abilitato**: Controlla le impostazioni dell'exploit o dell'homebrew sulla console (es. GoldHEN su PS4, etaHEN su PS5, ftpd su Switch, VitaShell su PS Vita).
+* **Verifica IP e Porta**: Assicurati che l'IP e la porta inseriti nelle Impostazioni corrispondano a quelli mostrati dalla console.
+* **Firewall Linux**: Se hai un firewall attivo sul computer (`ufw`), consenti il traffico verso la porta della console:
+  ```bash
+  sudo ufw allow out to any port 2121 proto tcp
+  ```
 
-### 2. Il download termina con successo ma il gioco non compare nel Package Installer
-* **Verifica il percorso della cartella**: Il Package Installer di GoldHEN cerca i file nella cartella `/data/pkg`. Assicurati che nelle Impostazioni il campo *Directory* sia impostato su `data/pkg`.
-* **Aggiorna la schermata**: Esci dal Package Installer e rientra per forzare la riscransione della cartella.
-* **Verifica l'estensione**: Il file deve avere estensione `.pkg` (scritta in minuscolo).
+### 2. Posso scaricare file diversi dai .pkg?
+* **Certamente!** P2C Downloader supporta in streaming qualsiasi estensione di file: `.iso`, `.bin`, `.xci`, `.nsp`, `.vpk`, `.zip`, `.7z`, ROM, aggiornamenti, file di configurazione, ecc. È sufficiente specificare la cartella di destinazione corretta per la tua console.
 
 ### 3. Compare il messaggio "File rimosso" o "Errore 404"
-* Sui siti di hosting gratuiti alcuni file possono essere rimossi nel tempo per inattività o copyright.
-* Apri la finestra dei **Dettagli** del gioco e prova a utilizzare un mirror alternativo (es. se Mediafire è offline, prova il link 1Fichier o Debrid). Il tasto **`Scarica Automatico su PS`** si occupa di testare i mirror funzionanti in automatico.
+* Sui siti di hosting gratuiti alcuni file possono essere cancellati nel tempo per inattività o copyright.
+* Apri la finestra dei **Dettagli** del gioco e prova un mirror alternativo (es. se Mediafire è offline, seleziona 1Fichier o Debrid). Il tasto **`Scarica Automatico su Console`** testerà automaticamente i mirror funzionanti.
 
 ### 4. Il risolutore Undetected ChromeDriver segnala che manca Chrome o Chromium
 * Installa Chromium o Google Chrome sul tuo sistema Linux:
   ```bash
   sudo apt install -y chromium-browser
   ```
-  oppure tramite Snap/Flatpak se la tua distribuzione lo prevede. Nelle Impostazioni dell'app premi il tasto **`Setup Dipendenze Undetected ChromeDriver`** per verificare che tutti i componenti siano pronti.
+  Nelle Impostazioni premi **`Setup Dipendenze Undetected ChromeDriver`** per completare la configurazione.
 
-### 5. Il programma consuma spazio sul mio hard disk o SSD?
-* **Per tutti i download diretti (.pkg)**: **Zero byte**. I pacchetti fluiscono direttamente dalla scheda di rete alla memoria RAM del computer e da questa alla PlayStation via FTP. Nessun file temporaneo viene salvato su disco.
-* **Per gli archivi divisi (.part1.rar)**: Le parti vengono scaricate nella cartella temporanea (`Temp Dir`) per permettere a 7-Zip di scompattarle. Non appena il file `.pkg` estratto è stato caricato sulla console, tutti i file temporanei vengono **automaticamente cancellati**.
+### 5. Il programma consuma spazio su disco sul mio PC?
+* **Per tutti i download diretti**: **Zero byte**. I dati fluiscono direttamente dalla scheda di rete alla RAM del computer e da questa alla console via FTP. Nessun file temporaneo viene salvato su disco.
+* **Per gli archivi divisi multi-volume (.part1.rar)**: Le parti vengono scaricate nella directory temporanea per permettere a 7-Zip di estrarle. Non appena il file estratto è stato caricato sulla console, tutti i file temporanei vengono **automaticamente cancellati**.
 
 ---
 
@@ -582,5 +534,5 @@ Lo script accetta la configurazione della console impostando le variabili `FTP_H
 Questo progetto è distribuito sotto licenza open source **MIT**. Consulta il file [LICENSE](LICENSE) per i termini completi.
 
 <div align="center">
-Realizzato con passione per la community PlayStation Homebrew.
+Realizzato con passione per la community Console & Homebrew.
 </div>

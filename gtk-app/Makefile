@@ -56,5 +56,5 @@ deb-install: deb
 	pkexec apt-get install -y --reinstall $$(realpath ../$(TARGET)_$(VERSION)_$(ARCH).deb)
 
 clean:
-	rm -f $(TARGET) ps-ftp-downloader
+	rm -f $(TARGET)
 	@echo "  [OK] Cleaned"

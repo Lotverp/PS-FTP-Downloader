@@ -56,9 +56,6 @@ RESOLVER="$SCRIPT_DIR/uc_resolver.py"
 if [ ! -f "$RESOLVER" ]; then
     RESOLVER="/usr/share/p2c-downloader/uc_resolver.py"
 fi
-if [ ! -f "$RESOLVER" ]; then
-    RESOLVER="/usr/share/ps-ftp-downloader/uc_resolver.py"
-fi
 
 if [ -f "$RESOLVER" ]; then
     chmod +x "$RESOLVER"

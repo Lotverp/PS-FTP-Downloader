@@ -490,7 +490,7 @@ def solve_url(url, password=None, timeout=45, headless=False, custom_browser=Non
     from selenium.webdriver.common.by import By
 
     import tempfile
-    temp_profile_dir = tempfile.mkdtemp(prefix="ps_uc_")
+    temp_profile_dir = tempfile.mkdtemp(prefix="p2c_uc_")
 
     options = uc.ChromeOptions()
     options.add_argument("--no-sandbox")

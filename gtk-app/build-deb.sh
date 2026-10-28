@@ -13,7 +13,7 @@ PKG_NAME="p2c-downloader"
 PKG_VERSION="1.3.5"
 PKG_ARCH="amd64"
 PKG_MAINTAINER="Your Name <your@email.com>"
-PKG_DESCRIPTION="Download PKG directly from network to console via FTP — with split-archive, DLPSGame catalog & Undetected ChromeDriver"
+PKG_DESCRIPTION="Download files and games directly from network to console via FTP — with split-archive, DLPSGame catalog & Undetected ChromeDriver"
 PKG_DEPENDS="libgtk-4-1, libcurl4 | libcurl4t64, libjson-glib-1.0-0, 7zip | unar | p7zip-full | unrar, python3, python3-pip"
 PKG_RECOMMENDS="chromium-browser | google-chrome-stable | chromium, unar"
 
@@ -73,15 +73,16 @@ Section: net
 Priority: optional
 Homepage: https://github.com/Lotverp/P2C-Downloader
 Description: ${PKG_DESCRIPTION}
- P2C Downloader downloads PKG files directly from any URL
+ P2C Downloader downloads files, games and packages directly from any URL
  and sends them to the console via FTP in real time, using a
  2 MB ring-buffer pipe. No temporary files, zero local storage.
  .
  Split-archive mode: download multi-part archives (.rar/.zip/etc.),
- extract locally with 7zip or unar, and upload the resulting .pkg via FTP.
+ extract locally with 7zip or unar, and upload the resulting file via FTP.
  All temporary files are deleted automatically after the upload.
  .
- Compatible with: GoldHen, ps4-hen, and any PlayStation FTP server.
+ Compatible with: PlayStation (PS3/PS4/PS5/PS Vita), Nintendo Switch, Xbox,
+ and any console or device running an FTP server.
  .
  Features:
   - Modern GTK4 interface with dark theme
@@ -138,8 +139,6 @@ install -m 0644 "${SCRIPT_DIR}/p2c-downloader.desktop"  "${PKG_ROOT}/usr/share/a
 # Check if the PNG icon exists, otherwise use SVG fallback
 if [ -f "${SCRIPT_DIR}/p2c-downloader.png" ]; then
     install -m 0644 "${SCRIPT_DIR}/p2c-downloader.png" "${PKG_ROOT}/usr/share/pixmaps/p2c-downloader.png"
-elif [ -f "${SCRIPT_DIR}/ps-ftp-downloader.png" ]; then
-    install -m 0644 "${SCRIPT_DIR}/ps-ftp-downloader.png" "${PKG_ROOT}/usr/share/pixmaps/p2c-downloader.png"
 else
     mkdir -p "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps"
     cat > "${PKG_ROOT}/usr/share/icons/hicolor/scalable/apps/p2c-downloader.svg" << 'SVGEOF'

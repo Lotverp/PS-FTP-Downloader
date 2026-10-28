@@ -2,10 +2,11 @@
 
 # ─────────────────────────────────────────────────────────────────
 #  P2C Downloader — CLI
-#  Scarica file e PKG direttamente dalla rete alla PlayStation via FTP
+#  Scarica file, giochi e pacchetti direttamente dalla rete alla console via FTP
 #  senza salvare nulla localmente su disco.
 #
-#  Supporta console PS con server FTP attivo (GoldHEN, ps4-hen, ecc.)
+#  Supporta qualsiasi console o dispositivo con server FTP attivo
+#  (PlayStation 3/4/5/Vita, Nintendo Switch, Xbox, ecc.)
 #
 #  Dipendenze: wget, curl, pv
 #  Installazione: sudo apt install wget curl pv
@@ -48,17 +49,17 @@ if [ ${#MISSING[@]} -gt 0 ]; then
     exit 1
 fi
 
-# Assicura automaticamente che la cartella FTP remota esista sulla PS
+# Assicura automaticamente che la cartella FTP remota esista sulla console
 echo -e "${DIM}  Connessione a Console FTP (ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/)...${RESET}"
 if curl -s --connect-timeout 4 -m 8 -u "anonymous:anonymous@" --ftp-create-dirs "ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/" -o /dev/null; then
-    echo -e "  ${GREEN}[OK] Connesso alla PS — Cartella '${FTP_DIR}' verificata e pronta!${RESET}"
+    echo -e "  ${GREEN}[OK] Connesso alla Console — Cartella '${FTP_DIR}' verificata e pronta!${RESET}"
 else
     echo -e "  ${YELLOW}[Avviso] Impossibile verificare/creare ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${RESET}"
-    echo -e "  ${DIM}  (Assicurati che GoldHEN / server FTP sia abilitato sulla console)${RESET}"
+    echo -e "  ${DIM}  (Assicurati che il server FTP sia abilitato sulla console)${RESET}"
 fi
 echo ""
 
-echo -e "${BOLD}URL del file da scaricare sulla PS:${RESET}"
+echo -e "${BOLD}URL del file da scaricare sulla Console:${RESET}"
 read -rp "  -> " DOWNLOAD_URL
 
 if [[ -z "$DOWNLOAD_URL" ]]; then
@@ -102,9 +103,9 @@ fi
 echo ""
 
 if [[ -n "$EXT" ]]; then
-    echo -e "${BOLD}Nome file di destinazione su PS${RESET} ${DIM}(senza estensione, .${EXT} verrà aggiunta):${RESET}"
+    echo -e "${BOLD}Nome file di destinazione sulla Console${RESET} ${DIM}(senza estensione, .${EXT} verrà aggiunta):${RESET}"
 else
-    echo -e "${BOLD}Nome file di destinazione su PS${RESET} ${DIM}(includi l'estensione se necessaria):${RESET}"
+    echo -e "${BOLD}Nome file di destinazione sulla Console${RESET} ${DIM}(includi l'estensione se necessaria):${RESET}"
 fi
 
 read -rp "  -> " BASE_NAME
@@ -125,11 +126,11 @@ FTP_URL="ftp://${FTP_HOST}:${FTP_PORT}/${FTP_DIR}/${DEST_FILENAME}"
 echo ""
 echo -e "${CYAN}---------------------------------------------${RESET}"
 echo -e "  ${BOLD}Riepilogo Trasferimento${RESET}"
-echo -e "  ${DIM}Sorgente     :${RESET} ${DOWNLOAD_URL}"
-echo -e "  ${DIM}PS (FTP)     :${RESET} ${FTP_URL}"
+echo -e "  ${DIM}Sorgente        :${RESET} ${DOWNLOAD_URL}"
+echo -e "  ${DIM}Console (FTP)   :${RESET} ${FTP_URL}"
 echo -e "${CYAN}---------------------------------------------${RESET}"
 echo ""
-read -rp "  Confermare e avviare il trasferimento su PS? [S/n] " CONFIRM
+read -rp "  Confermare e avviare il trasferimento sulla Console? [S/n] " CONFIRM
 CONFIRM="${CONFIRM,,}"
 if [[ "$CONFIRM" == "n" || "$CONFIRM" == "no" ]]; then
     echo -e "${YELLOW}  Operazione annullata.${RESET}"
@@ -137,7 +138,7 @@ if [[ "$CONFIRM" == "n" || "$CONFIRM" == "no" ]]; then
 fi
 
 echo ""
-echo -e "${BLUE}  Streaming verso la PlayStation in corso...${RESET}"
+echo -e "${BLUE}  Streaming verso la Console in corso...${RESET}"
 echo ""
 
 if [[ -n "$FILE_SIZE" ]]; then
@@ -154,11 +155,11 @@ EXIT_CODE=$?
 
 echo ""
 if [[ $EXIT_CODE -eq 0 ]]; then
-    echo -e "${GREEN}${BOLD}  [OK] File inviato con successo alla PlayStation!${RESET}"
-    echo -e "  ${DIM}Disponibile su PS in: /${FTP_DIR}/${DEST_FILENAME}${RESET}"
+    echo -e "${GREEN}${BOLD}  [OK] File inviato con successo alla Console!${RESET}"
+    echo -e "  ${DIM}Disponibile sulla Console in: /${FTP_DIR}/${DEST_FILENAME}${RESET}"
 else
     echo -e "${RED}${BOLD}  [Errore] Trasferimento non riuscito (codice: ${EXIT_CODE})${RESET}"
-    echo -e "  ${YELLOW}  - Verifica che la PS sia accesa con GoldHEN / FTP attivo${RESET}"
+    echo -e "  ${YELLOW}  - Verifica che la console sia accesa con server FTP attivo${RESET}"
     echo -e "  ${YELLOW}  - Controlla l'indirizzo IP configurato: ${FTP_HOST}:${FTP_PORT}${RESET}"
     exit $EXIT_CODE
 fi
